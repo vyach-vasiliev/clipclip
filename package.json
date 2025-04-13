@@ -26,6 +26,7 @@
     "build:portable": "electron-builder build --win portable"
   },
   "devDependencies": {
+    "@mdi/font": "^7.4.47",
     "@vitejs/plugin-vue": "^5.0.4",
     "electron": "^29.1.1",
     "electron-builder": "^24.13.3",
