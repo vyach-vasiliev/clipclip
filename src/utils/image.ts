@@ -13,7 +13,7 @@ export const getImageSize = (url: string): Promise<{ width: number; height: numb
     });
 };
 
-export const getSource = async () => {
+export const getSource = async (): Promise<ClipboardHistoryItemParamSource> => {
     const activeWinData: Result | undefined = await window.electron.getActiveWindowSync();
     console.warn("activeWinData", activeWinData);
     if (activeWinData) {

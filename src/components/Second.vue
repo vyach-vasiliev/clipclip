@@ -1,32 +1,68 @@
 <script setup lang="ts">
 import {ref, computed, onMounted, onUnmounted} from 'vue';
-import {ClipboardHistoryItem, queryInput, useBufferStore} from '../store/buffer';
+import {ClipboardHistoryItem, ClipboardHistoryItemTag, queryInput, useBufferStore} from '../store/buffer';
+import SearchPanel from './SearchPanel.vue';
 
-const searchField = ref(null); // Ссылка на v-text-field
-const selectedIndex = ref(0); // Индекс выделенного элемента
+const searchField = ref(null);
+const searchPanelRef = ref<InstanceType<typeof SearchPanel>>();
+const selectedIndex = ref(0);
+const selectedTags = ref<ClipboardHistoryItemTag[]>([]);
+
+const allTags = computed((): ClipboardHistoryItemTag[] => {
+  const tags = new Set<string>();
+  bufferStore.clipboardHistory.forEach(item => {
+    item.params.tags?.forEach(tag => {
+      tags.add(`${tag.code}:${tag.value}`);
+    });
+  });
+  return Array.from(tags).map(tag => {
+    const [code, value] = tag.split(':');
+    return { code, value };
+  });
+});
 
 const bufferStore = useBufferStore();
 
 const filteredClipboardHistory = computed(() => {
-      const query = queryInput.value.toLowerCase().trim();
-
-      let clipboardHistory = bufferStore.clipboardHistory;
-      if (query) {
-        clipboardHistory = bufferStore.clipboardHistory.filter(item => {
-              if (item.type === 'text')
-                return item.data.toLowerCase().includes(query)
-            }
+  const query = queryInput.value.toLowerCase().trim();
+  
+  let clipboardHistory = bufferStore.clipboardHistory;
+  
+  return clipboardHistory.filter(item => {
+    // Фильтрация по тексту (если есть запрос)
+    const textMatches = !query || 
+      (item.type === 'text' && item.data.toLowerCase().includes(query)) ||
+      item.params.tags?.some(tag => tag.value.toLowerCase().includes(query));
+    
+    // Фильтрация по тегам (если есть выбранные теги)
+    const tagsMatch = selectedTags.value.length === 0 || 
+      selectedTags.value.every(selectedTag => 
+        item.params.tags?.some(tag => 
+          tag.code === selectedTag.code && 
+          tag.value === selectedTag.value
         )
-      }
+      );
+    
+    return textMatches && tagsMatch && !item.isDeleted;
+  });
+});
 
-      return clipboardHistory.filter(item => !item.isDeleted)
-      // return clipboardHistory.map(item => {
-      //   item.data = `<pre>${item.data}</pre>`;
-      //   return item
-      // })
+const showTagSuggestions = computed(() => {
+  return queryInput.value.trim().length > 0;
+});
+
+const suggestedTags = computed(() => {
+  console.log("queryInput", allTags.value);
+  const query = queryInput.value.toLowerCase().trim();
+  if (!query) return [];
+  
+  return allTags.value.filter(tag => 
+    {
+      return tag.value.toLowerCase().includes(query) ||
+    tag.code.toLowerCase().includes(query)
     }
-);
-
+  );
+});
 
 const highlightTextAsHTML = (text: string) => {
   const query = queryInput.value.toLowerCase().trim();
@@ -43,7 +79,7 @@ const handleKeydown = (event: KeyboardEvent) => {
   console.log("keyEvent", event);
 
   if (/^[a-zA-Zа-яА-Я0-9\s]$/.test(event.key)) {
-    searchField.value?.focus(); // Set autofocus on the search field
+    searchPanelRef.value?.searchField?.focus(); // Set autofocus on the search field
   }
 
   if (event.key === "ArrowDown") {
@@ -66,6 +102,14 @@ const handleKeydown = (event: KeyboardEvent) => {
     bufferStore.clipboardHistory[historyIndex].isDeleted = true
   }
 
+};
+
+const handleSelectedTagsUpdate = (tags: ClipboardHistoryItemTag[]) => {
+  selectedTags.value = tags;
+};
+
+const handleTagClick = (tag: ClipboardHistoryItemTag) => {
+  searchPanelRef.value?.addSelectedTag(tag);
 };
 
 onMounted(() => {
@@ -176,14 +220,13 @@ body {
 
 <template>
   <v-container class="ma-0">
-<!--    <p>History of clipboard</p>-->
-
-      <v-row justify="start">
-        <v-card-text class="pt-0 pb-0">
-          <v-text-field label="Start type to search.." variant="underlined" v-model="queryInput" ref="searchField"></v-text-field>
-        </v-card-text>
-      </v-row>
-
+    <SearchPanel 
+      ref="searchPanelRef"
+      v-model="queryInput"
+      :all-tags="allTags"
+      @update:selectedTags="handleSelectedTagsUpdate"
+    />
+    
     <div id="clipboard-history" class="d-flex flex-wrap flex-column justify-center pt-2 pb-4"
          style="min-height: 300px;">
 
@@ -210,9 +253,9 @@ body {
 
 <!--            <v-chip-group selected-class="bg-deep-purple-lighten-2" class="ml-1 mb-0 pa-0">-->
             <v-chip-group class="ml-1 mb-0 pa-0 tags-group">
-              <v-chip class="chip" size="x-small" label variant="outlined" style="background-color: #FFF;">{{ item.params.size }}</v-chip>
-              <v-chip class="chip" size="x-small" label variant="outlined" style="background-color: #FFF;">{{ item.params.type }}</v-chip>
-              <v-chip class="chip" size="x-small" label variant="outlined" style="background-color: #FFF;">{{ item.params.source.name }}</v-chip>
+              <v-chip 
+              v-for="(tag, index) in item.params.tags" :key="index" class="chip" size="x-small" label variant="outlined" style="background-color: #FFF;" @click="handleTagClick(tag)"
+              >{{ tag.value }}</v-chip>
 
               <v-chip size="x-small" class="copy-chip ml-auto" label variant="flat"
                       @click="copyToClipboard(item)">Copy</v-chip>

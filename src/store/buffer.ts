@@ -22,19 +22,34 @@ export class ClipboardHistoryItemParamSource{
     }
 }
 
+export class ClipboardHistoryItemTag {
+    code: string;
+    value: string;
+    showWithoutHash: boolean = false;
+  
+    constructor(code: string, value: string, showWithoutHash?: boolean) {
+      this.code = code;
+      this.value = value;
+      this.showWithoutHash = showWithoutHash ?? false;
+    }
+  }
+
 export class ClipboardHistoryItemParams{
     size: string;
     type: string;
     source: ClipboardHistoryItemParamSource;
+    tags: ClipboardHistoryItemTag[];
 
     constructor(
         size: string,
         type: string,
-        source: ClipboardHistoryItemParamSource
+        source: ClipboardHistoryItemParamSource,
+        tags: ClipboardHistoryItemTag[] = []
     ) {
         this.size = size;
         this.type = type;
         this.source = source;
+        this.tags = tags;
     }
 }
 
@@ -74,10 +89,16 @@ export const useBufferStore = defineStore('buffer', () => {
         if (text && lastItem.data !== text) {
             console.warn("text", text)
             console.warn("lastItem.data", lastItem.data)
+            const source = await getSource();
             const params = new ClipboardHistoryItemParams(
                 `${text.length} length`,
                     'text',
-                    await getSource()
+                    source,
+                    [
+                        new ClipboardHistoryItemTag("size", `${text.length} length`),
+                        new ClipboardHistoryItemTag("type", "text"),
+                        new ClipboardHistoryItemTag("source", source.name),
+                    ]
             )
             clipboardHistory.value.unshift(new ClipboardHistoryItem( 'text', text, params));
         }
@@ -87,10 +108,16 @@ export const useBufferStore = defineStore('buffer', () => {
         if (image && lastItem.data !== image) {
             // image like as "data:image/png;base64,iVBOR..."
             const imageSizes = await getImageSize(image);
+            const source = await getSource();
             const params = new ClipboardHistoryItemParams(
                 `${imageSizes.width}x${imageSizes.height}`,
                 'image',
-                await getSource(),
+                source,
+                [
+                    new ClipboardHistoryItemTag("size", `${imageSizes.width}x${imageSizes.height}`),
+                    new ClipboardHistoryItemTag("type", "image"),
+                    new ClipboardHistoryItemTag("source", source.name),
+                ]
             )
             clipboardHistory.value.unshift(new ClipboardHistoryItem( 'image', image, params));
         }
