@@ -1,8 +1,9 @@
-import { app, BrowserWindow, shell, ipcMain } from 'electron'
+import {app, BrowserWindow, shell, ipcMain, globalShortcut, clipboard, dialog} from 'electron'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
+import {activeWindowSync} from "get-windows";
 
 const require = createRequire(import.meta.url)
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -42,10 +43,25 @@ let win: BrowserWindow | null = null
 const preload = path.join(__dirname, '../preload/index.mjs')
 const indexHtml = path.join(RENDERER_DIST, 'index.html')
 
-async function createWindow() {
+
+async function handleFileOpen() {
+  const { canceled, filePaths } = await dialog.showOpenDialog({ title: "Open File" })
+  if (!canceled) {
+    return filePaths[0]
+  }
+}
+
+async function createOrShowWindow() {
+  if (win) {
+    win.focus();
+    return;
+  }
   win = new BrowserWindow({
     title: 'Main window',
+    width: 800,
+    height: 600,
     icon: path.join(process.env.VITE_PUBLIC, 'favicon.ico'),
+    autoHideMenuBar: true,
     webPreferences: {
       preload,
       // Warning: Enable nodeIntegration and disable contextIsolation is not secure in production
@@ -57,12 +73,14 @@ async function createWindow() {
     },
   })
 
+  win.maximize()
+
   if (VITE_DEV_SERVER_URL) { // #298
-    win.loadURL(VITE_DEV_SERVER_URL)
+    win.loadURL(VITE_DEV_SERVER_URL+"second")
     // Open devTool if the app is not packaged
     win.webContents.openDevTools()
   } else {
-    win.loadFile(indexHtml)
+    win.loadFile(indexHtml, { hash: '/second' })
   }
 
   // Test actively push message to the Electron-Renderer
@@ -76,9 +94,36 @@ async function createWindow() {
     return { action: 'deny' }
   })
   // win.webContents.on('will-navigate', (event, url) => { }) #344
+
+  win.setMenu(null)  // and disable close by ctrl+w
+
+  ipcMain.handle('dialog:openFile', handleFileOpen)
+
+  ipcMain.handle('clipboard:readText', () => {
+    return clipboard.readText();
+  })
+
+  ipcMain.handle('clipboard:readImage', () => {
+    return clipboard.readImage().toDataURL();
+  })
+
+  ipcMain.handle('get-active-window',  () => {
+    try {
+      return activeWindowSync();
+    } catch (error) {
+      console.error('Ошибка при получении активного окна:', error);
+      return undefined;
+    }
+  })
+
+  globalShortcut.register('Ctrl+Alt+B', () => {
+    console.log("run createOrShowWindow");
+    createOrShowWindow();
+  })
+
 }
 
-app.whenReady().then(createWindow)
+app.whenReady().then(createOrShowWindow)
 
 app.on('window-all-closed', () => {
   win = null
@@ -98,7 +143,7 @@ app.on('activate', () => {
   if (allWindows.length) {
     allWindows[0].focus()
   } else {
-    createWindow()
+    createOrShowWindow()
   }
 })
 
@@ -117,4 +162,9 @@ ipcMain.handle('open-win', (_, arg) => {
   } else {
     childWindow.loadFile(indexHtml, { hash: arg })
   }
+})
+
+
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
 })

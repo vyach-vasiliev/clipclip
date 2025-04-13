@@ -116,3 +116,14 @@ window.onmessage = (ev) => {
 }
 
 setTimeout(removeLoading, 4999)
+
+
+// ------------- Electron API -------------
+contextBridge.exposeInMainWorld('electron', {
+  openFile: () => ipcRenderer.invoke('dialog:openFile'),
+  getActiveWindowSync: () => ipcRenderer.invoke('get-active-window'),
+  clipboard: {
+    readText: () => ipcRenderer.invoke('clipboard:readText'),
+    readImage: () => ipcRenderer.invoke('clipboard:readImage'),
+  }
+})
