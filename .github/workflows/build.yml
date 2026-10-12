@@ -1,47 +1,30 @@
 name: Build
-
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "**.md"
-      - "**.spec.js"
-      - ".idea"
-      - ".vscode"
-      - ".dockerignore"
-      - "Dockerfile"
-      - ".gitignore"
-      - ".github/**"
-      - "!.github/workflows/build.yml"
-
+  workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
-
     strategy:
+      fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
-
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 18
-
-      - name: Install Dependencies
-        run: npm install
-
-      - name: Build Release Files
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build local release files
         run: npm run build
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v7
         with:
-          name: release_on_${{ matrix. os }}
+          name: release-${{ matrix.os }}
           path: release/
+          if-no-files-found: error
           retention-days: 5
