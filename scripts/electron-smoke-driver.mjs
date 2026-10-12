@@ -92,7 +92,7 @@ async function run() {
     assert.equal(BrowserWindow.getAllWindows().length, 1)
     await evaluate('location.href="app://other/index.html"')
     await delay(100)
-    assert.ok(window.webContents.getURL().startsWith('app://clipclip/index.html'))
+    assert.ok(window.webContents.getURL().startsWith(process.env.VITE_DEV_SERVER_URL || 'app://clipclip/index.html'))
 
     nativeTheme.themeSource = 'light'
     await delay(150)

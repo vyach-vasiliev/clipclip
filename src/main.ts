@@ -27,6 +27,6 @@ const vuetify = createVuetify({
   },
 })
 window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', event => {
-  vuetify.theme.global.name.value = event.matches ? 'clipclipDark' : 'clipclipLight'
+  vuetify.theme.change(event.matches ? 'clipclipDark' : 'clipclipLight')
 })
 createApp(App).use(createPinia()).use(vuetify).use(router).mount('#app')

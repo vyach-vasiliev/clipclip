@@ -19,6 +19,11 @@ export default defineConfig(({ command }) => ({
       },
       preload: {
         input: 'electron/preload/index.ts',
+        onstart({ startup, reload }) {
+          if (process.env.VSCODE_DEBUG) return
+          if (process.electronApp) reload()
+          else void startup(['.'])
+        },
         vite: { build: {
           sourcemap: command === 'serve' ? 'inline' : false,
           outDir: 'dist-electron/preload',

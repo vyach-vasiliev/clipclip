@@ -11,7 +11,8 @@ const output = path.join(root, 'test-results')
 await mkdir(output, { recursive: true })
 const environment = { ...process.env, CLIPCLIP_TEST_MODE: '1', CLIPCLIP_TEST_USER_DATA: profile, CLIPCLIP_TEST_OUTPUT: output }
 delete environment.ELECTRON_RUN_AS_NODE
-delete environment.VITE_DEV_SERVER_URL
+if (process.env.CLIPCLIP_TEST_DEV_SERVER) environment.VITE_DEV_SERVER_URL = process.env.CLIPCLIP_TEST_DEV_SERVER
+else delete environment.VITE_DEV_SERVER_URL
 const child = spawn(electron, ['--disable-gpu', path.join(root, 'scripts/electron-smoke-driver.mjs')], {
   cwd: root, env: environment, stdio: 'inherit', windowsHide: true,
 })
