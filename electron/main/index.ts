@@ -152,7 +152,7 @@ function showWindow() {
 
 function createWindow() {
   win = new BrowserWindow({
-    title: 'ClipClip Manager', width: 960, height: 760, minWidth: 520, minHeight: 480,
+    title: 'ClipClip Manager', width: 460, height: 560, minWidth: 380, minHeight: 420,
     show: false, icon, autoHideMenuBar: true,
     webPreferences: { preload, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
   })

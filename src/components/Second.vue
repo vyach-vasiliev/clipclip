@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline } from '@mdi/js'
-import { HISTORY_LIMIT, TAG_LABELS, tagKey, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
+import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose } from '@mdi/js'
+import { HISTORY_LIMIT, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
 import { useBufferStore } from '../store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags, isEditingTarget, isActionTarget } from '../utils/history'
 import SearchPanel from './SearchPanel.vue'
@@ -13,12 +13,14 @@ const selectedId = ref<string | null>(null)
 const searchPanel = ref<InstanceType<typeof SearchPanel>>()
 const announcement = ref('')
 const copyingId = ref<string | null>(null)
+const previewDialog = ref<HTMLDialogElement>()
+const previewId = ref<string | null>(null)
+const preview = computed(() => buffer.clipboardHistory.find(item => item.id === previewId.value))
 let unsubscribeShown: (() => void) | undefined
 let announcementTimer: ReturnType<typeof setTimeout> | undefined
 const allTags = computed(() => historyTags(buffer.clipboardHistory))
 const filtered = computed(() => filterHistory(buffer.clipboardHistory, search.value, selectedTags.value))
 const selected = computed(() => filtered.value.find(item => item.id === selectedId.value))
-const tagLabels = TAG_LABELS
 function recordLabel(item: ClipboardHistoryItem) {
   return item.type === 'text' ? 'Текст: ' + (item.data.trim() ? item.data.slice(0, 160).replace(/\s+/g, ' ') : 'Пробелы и переносы строк')
     : 'Изображение, ' + item.params.size
@@ -35,6 +37,18 @@ function announce(message: string) {
 }
 function clearFilters() { search.value = ''; selectedTags.value = [] }
 function select(item: ClipboardHistoryItem) { selectedId.value = item.id }
+async function openPreview(item: ClipboardHistoryItem) {
+  previewId.value = item.id
+  await nextTick()
+  previewDialog.value?.showModal()
+}
+function prepareQuickPick() {
+  previewDialog.value?.close()
+  clearFilters()
+  selectedId.value = filtered.value[0]?.id ?? null
+  searchPanel.value?.focus()
+  document.querySelector('.history-list')?.scrollTo({ top: 0 })
+}
 async function copy(item: ClipboardHistoryItem | undefined, hide = false) {
   if (!item || buffer.busy) return
   copyingId.value = item.id
@@ -42,7 +56,7 @@ async function copy(item: ClipboardHistoryItem | undefined, hide = false) {
   copyingId.value = null
   if (copied) {
     announce('Скопировано в буфер обмена.')
-    if (hide) await buffer.hide()
+    if (hide) { previewDialog.value?.close(); await buffer.hide() }
   }
 }
 async function remove(item: ClipboardHistoryItem) {
@@ -85,7 +99,7 @@ function shortText(item: ClipboardHistoryItem) { return item.data.slice(0, 1200)
 
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)
-  unsubscribeShown = window.electronAPI?.onWindowShown(() => searchPanel.value?.focus())
+  unsubscribeShown = window.electronAPI?.onWindowShown(prepareQuickPick)
   searchPanel.value?.focus()
 })
 onBeforeUnmount(() => {
@@ -98,23 +112,20 @@ onBeforeUnmount(() => {
 <template>
   <main class="history-page">
     <header class="page-header">
-      <div>
-        <div class="brand-line"><v-icon :icon="mdiClipboardTextOutline" aria-hidden="true" /><span>ClipClip</span></div>
-        <h1>История буфера обмена</h1>
-        <p class="intro">Скопированные тексты и изображения всегда под рукой.</p>
-      </div>
-      <v-btn variant="outlined" :prepend-icon="buffer.paused ? mdiPlay : mdiPause" :disabled="buffer.busy || buffer.loading"
-        @click="buffer.setPaused(!buffer.paused)">{{ buffer.paused ? 'Продолжить запись' : 'Пауза' }}</v-btn>
+      <div class="brand-line"><v-icon :icon="mdiClipboardTextOutline" aria-hidden="true" /><h1>ClipClip</h1></div>
+      <span class="capture-status" :title="buffer.persistent ? 'История сохраняется с шифрованием' : 'История только в памяти этой сессии'">
+        <span :class="['status-dot', { paused: buffer.paused }]" />{{ buffer.paused ? 'Пауза' : 'Запись' }}
+      </span>
+      <v-btn variant="text" :icon="buffer.paused ? mdiPlay : mdiPause" :disabled="buffer.busy || buffer.loading"
+        :title="buffer.paused ? 'Продолжить запись' : 'Приостановить запись'" :aria-label="buffer.paused ? 'Продолжить запись' : 'Приостановить запись'"
+        @click="buffer.setPaused(!buffer.paused)" />
     </header>
 
-    <div class="status-row">
-      <span class="capture-status"><span :class="['status-dot', { paused: buffer.paused }]" />{{ buffer.paused ? 'Запись приостановлена' : 'Запись включена' }}</span>
-      <span>{{ buffer.persistent ? 'История сохраняется с шифрованием' : 'История только в памяти этой сессии' }}</span>
-    </div>
+    <p v-if="!buffer.loading && !buffer.persistent" class="session-notice">История только в памяти этой сессии</p>
     <v-alert v-if="buffer.error" type="error" variant="tonal" role="alert" class="notice">{{ buffer.error }}</v-alert>
-    <v-alert v-if="!buffer.loading && !buffer.shortcutAvailable" type="info" variant="tonal" class="notice">
-      Ctrl + Alt + B недоступна. Открывайте ClipClip через область уведомлений или панель задач.
-    </v-alert>
+    <p v-if="!buffer.loading && !buffer.shortcutAvailable" class="shortcut-notice">
+      Ctrl + Alt + B недоступна. Откройте окно через значок ClipClip.
+    </p>
     <SearchPanel ref="searchPanel" v-model="search" v-model:selected-tags="selectedTags" :all-tags="allTags" />
 
     <section class="history-section" aria-labelledby="history-title" :aria-busy="buffer.loading">
@@ -133,17 +144,9 @@ onBeforeUnmount(() => {
       <ul v-else class="history-list">
         <li v-for="item in filtered" :key="item.id">
           <article class="clipboard-record" :class="{ selected: item.id === selectedId }">
-            <div class="record-topline">
-              <span class="muted">{{ item.type === 'text' ? 'Текст' : 'Изображение' }}</span>
-              <div class="record-actions">
-                <v-btn variant="tonal" :prepend-icon="mdiContentCopy" :loading="copyingId === item.id" :disabled="buffer.busy"
-                  :aria-label="'Скопировать запись. ' + recordLabel(item)" @click="copy(item)">Копировать</v-btn>
-                <v-btn variant="text" :icon="mdiDeleteOutline" :disabled="buffer.busy" :aria-label="'Удалить запись. ' + recordLabel(item)" @click="remove(item)" />
-              </div>
-            </div>
             <button :id="'record-' + item.id" class="record-select" :aria-pressed="item.id === selectedId"
-              :aria-label="recordLabel(item) + ', ' + item.params.source.name"
-              :tabindex="item.id === selectedId ? 0 : -1" @focus="select(item)" @click="select(item)">
+              :aria-label="'Скопировать и скрыть. ' + recordLabel(item) + ', ' + item.params.source.name" title="Скопировать и скрыть"
+              :disabled="buffer.busy" :tabindex="item.id === selectedId ? 0 : -1" @focus="select(item)" @click="select(item); copy(item, true)">
               <p v-if="item.type === 'text'" class="text-preview">
                 <span v-if="!item.data.trim()" class="muted">Пробелы и переносы строк</span>
                 <template v-else v-for="(part, index) in highlightParts(shortText(item), search)" :key="index">
@@ -151,33 +154,35 @@ onBeforeUnmount(() => {
                 </template>
               </p>
               <img v-else :src="item.data" :alt="'Изображение из буфера, ' + item.params.size" class="image-preview" loading="lazy" />
+              <span class="record-meta"><span>{{ item.params.source.name }}</span><span>{{ item.params.size }}</span></span>
             </button>
-            <details v-if="item.type === 'text' && (item.data.length > 240 || item.data.split('\n').length > 4)" class="full-preview">
-              <summary>Полный текст</summary><pre>{{ item.data }}</pre>
-            </details>
-            <details v-if="item.type === 'image'" class="full-preview">
-              <summary>Изображение целиком</summary><img :src="item.data" :alt="'Полное изображение, ' + item.params.size" />
-            </details>
-            <footer class="record-footer">
-              <div class="record-tags" aria-label="Свойства и фильтры">
-                <v-chip v-for="tag in item.params.tags" :key="tagKey(tag)" variant="outlined"
-                  :title="tagLabels[tag.code] + ': ' + tag.value + (tag.code === 'source' ? ' (приблизительно)' : '')"
-                  @click="searchPanel?.addSelectedTag(tag)">{{ tag.value }}</v-chip>
-              </div>
-            </footer>
+            <div class="record-actions">
+              <v-btn class="preview-button" variant="text" :icon="mdiEyeOutline" :aria-label="'Просмотреть запись. ' + recordLabel(item)" title="Полный просмотр" @click="openPreview(item)" />
+              <v-btn variant="text" :icon="mdiDeleteOutline" :disabled="buffer.busy" :aria-label="'Удалить запись. ' + recordLabel(item)" title="Удалить" @click="remove(item)" />
+            </div>
           </article>
         </li>
       </ul>
     </section>
 
-    <div class="feedback-row">
-      <p role="status" aria-live="polite">{{ announcement }}</p>
+    <p class="sr-only" role="status" aria-live="polite">{{ announcement }}</p>
+    <div v-if="announcement || buffer.canUndo" class="feedback-row">
+      <p aria-hidden="true">{{ announcement }}</p>
       <v-btn v-if="buffer.canUndo" variant="text" :prepend-icon="mdiUndo" :disabled="buffer.busy" @click="buffer.undo">Отменить удаление</v-btn>
     </div>
     <footer class="keyboard-help" aria-label="Горячие клавиши">
-      <span><kbd>↑</kbd><kbd>↓</kbd> выбор</span><span><kbd>Enter</kbd> копировать и скрыть</span>
-      <span><kbd>Esc</kbd> сбросить поиск / скрыть</span><span><kbd>Delete</kbd> удалить в списке</span>
-      <span class="show-shortcut"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>B</kbd> открыть</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> выбор</span><span><kbd>Enter</kbd> копировать</span><span><kbd>Esc</kbd> скрыть</span>
     </footer>
+
+    <dialog ref="previewDialog" class="preview-dialog" aria-labelledby="preview-title" @keydown.stop>
+      <div class="preview-heading"><h2 id="preview-title">{{ preview?.type === 'image' ? 'Изображение' : 'Полный текст' }}</h2>
+        <v-btn variant="text" :icon="mdiClose" aria-label="Закрыть просмотр" @click="previewDialog?.close()" /></div>
+      <div class="preview-content">
+        <pre v-if="preview?.type === 'text'">{{ preview.data }}</pre>
+        <img v-else-if="preview" :src="preview.data" :alt="'Полное изображение, ' + preview.params.size" />
+        <p v-else>Запись уже удалена.</p>
+      </div>
+      <v-btn v-if="preview" variant="tonal" :prepend-icon="mdiContentCopy" :loading="copyingId === preview.id" :disabled="buffer.busy" @click="copy(preview, true)">Копировать и скрыть</v-btn>
+    </dialog>
   </main>
 </template>

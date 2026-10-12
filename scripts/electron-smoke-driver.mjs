@@ -36,6 +36,7 @@ async function run() {
 
   try {
     let window = await firstWindow
+    assert.deepEqual(window.getSize(), [460, 560])
     const evaluate = code => window.webContents.executeJavaScript('(async () => { ' + (code.includes(';') ? code : 'return (' + code + ')') + ' })()')
     for (let attempt = 0; attempt < 50; attempt++) {
       if (await evaluate('Boolean(document.querySelector(".record-select"))')) break
@@ -94,18 +95,50 @@ async function run() {
     await delay(100)
     assert.ok(window.webContents.getURL().startsWith(process.env.VITE_DEV_SERVER_URL || 'app://clipclip/index.html'))
 
+    // Fill the compact list without reading or changing the system clipboard.
+    for (let record = 0; record < 8; record++) {
+      process.env.CLIPCLIP_TEST_TEXT = 'Запись ' + (record + 1) + ': заметка для быстрого выбора.\nВторая строка с описанием.'
+      for (let attempt = 0; attempt < 30; attempt++) {
+        const captured = await evaluate('(await window.electronAPI.getHistory()).items.some(item => item.data.startsWith(' + JSON.stringify('Запись ' + (record + 1) + ':') + '))')
+        if (captured) break
+        await delay(50)
+      }
+    }
+    app.emit('activate')
+    await delay(100)
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).items.length'), 10)
+    assert.equal(await evaluate('document.querySelector(".history-list").scrollHeight > document.querySelector(".history-list").clientHeight'), true)
+    await evaluate('document.querySelector(".preview-button").click()')
+    await delay(100)
+    assert.equal(await evaluate('document.querySelector("dialog").open'), true)
+    await screenshot(window, 'preview.png')
+    await evaluate('document.querySelector("dialog button").click()')
+    assert.equal(await evaluate('document.querySelector("dialog").open'), false)
+
     nativeTheme.themeSource = 'light'
     await delay(150)
     await screenshot(window, 'light.png')
     nativeTheme.themeSource = 'dark'
     await delay(150)
     await screenshot(window, 'dark.png')
-    window.setSize(560, 640)
+    window.setSize(380, 420)
     await delay(150)
     assert.equal(await evaluate('document.documentElement.scrollWidth <= window.innerWidth'), true)
+    assert.equal(await evaluate('document.documentElement.scrollHeight <= window.innerHeight'), true)
+    assert.equal(await evaluate('document.querySelector(".history-list").clientHeight >= 84'), true)
     await screenshot(window, 'compact.png')
 
-    await evaluate('document.querySelector("input").dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true}))')
+    for (let step = 0; step < 9; step++) {
+      await evaluate('document.querySelector("input").dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowDown",bubbles:true}))')
+    }
+    await delay(100)
+    assert.equal(await evaluate('document.querySelector(".history-list").scrollTop > 0'), true)
+    app.emit('activate')
+    await delay(100)
+    assert.equal(await evaluate('document.querySelector(".history-list").scrollTop'), 0)
+    assert.equal(await evaluate('document.activeElement === document.querySelector("input")'), true)
+
+    await evaluate('document.querySelector(".record-select").click()')
     await delay(100)
     assert.equal(window.isVisible(), false)
     console.log('Electron smoke test passed: isolated clipboard, IPC, search, keyboard, window lifecycle, light/dark and compact layout.')

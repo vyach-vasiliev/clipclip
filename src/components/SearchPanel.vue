@@ -29,7 +29,7 @@ defineExpose({ focus, addSelectedTag })
 <template>
   <section class="search-panel" aria-label="Поиск и фильтры">
     <v-text-field ref="searchField" v-model="query" label="Поиск в истории" placeholder="Текст, приложение или #фильтр"
-      variant="outlined" color="primary" hide-details clearable :prepend-inner-icon="mdiMagnify" :clear-icon="mdiClose" autocomplete="off" />
+      variant="outlined" density="compact" color="primary" hide-details clearable :prepend-inner-icon="mdiMagnify" :clear-icon="mdiClose" autocomplete="off" />
     <div v-if="selectedTags.length" class="filter-row" aria-label="Выбранные фильтры">
       <v-chip v-for="tag in selectedTags" :key="tagKey(tag)" closable :close-icon="mdiClose"
         :aria-label="labels[tag.code] + ': ' + tag.value"

@@ -17,6 +17,7 @@ import type { ClipboardHistoryItem, ElectronAPI, HistoryState } from '../shared/
 
 const wrappers: VueWrapper[] = []
 let emitState: (state: HistoryState) => void
+let emitShown: () => void
 const item = (id: string, data = 'fixture [ bracket.\nsecond line'): ClipboardHistoryItem => ({
   id, type: 'text', data, createdAt: 1,
   params: { size: '20 симв.', type: 'text', source: { name: 'Fixture: app', title: '' },
@@ -29,7 +30,7 @@ async function setup(items?: ClipboardHistoryItem[]) {
   const api: ElectronAPI = {
     getHistory: vi.fn(async () => state(items)),
     onHistoryChanged: vi.fn(callback => { emitState = callback; return vi.fn() }),
-    onWindowShown: vi.fn(() => vi.fn()),
+    onWindowShown: vi.fn(callback => { emitShown = callback; return vi.fn() }),
     copyItem: vi.fn(async () => {}), deleteItem: vi.fn(async () => {}), undoDelete: vi.fn(async () => {}),
     setPaused: vi.fn(async () => {}), hideWindow: vi.fn(async () => {}),
   }
@@ -49,6 +50,9 @@ beforeEach(() => {
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
   vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addEventListener() {}, removeEventListener() {} })))
   HTMLElement.prototype.scrollIntoView = vi.fn()
+  HTMLElement.prototype.scrollTo = vi.fn()
+  HTMLDialogElement.prototype.close = vi.fn()
+  HTMLDialogElement.prototype.showModal = vi.fn()
 })
 afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); document.body.innerHTML = ''; delete window.electronAPI; vi.unstubAllGlobals() })
 
@@ -87,7 +91,7 @@ describe('search and navigation', () => {
   })
   it('preserves the identity of selection when new records arrive', async () => {
     const { wrapper, api } = await setup([item('first'), item('second')])
-    await wrapper.get('#record-second').trigger('click')
+    await wrapper.get('#record-second').trigger('focus')
     emitState(state([item('new'), item('first'), item('second')], 2))
     await flushPromises()
     expect(wrapper.get('#record-second').attributes('aria-pressed')).toBe('true')
@@ -117,6 +121,32 @@ describe('search and navigation', () => {
     expect(api.hideWindow).not.toHaveBeenCalled()
     finish(); await flushPromises()
     expect(api.hideWindow).toHaveBeenCalledTimes(1)
+  })
+  it('copies and hides with a single click on a record', async () => {
+    const { wrapper, api } = await setup()
+    await wrapper.get('.record-select').trigger('click')
+    await flushPromises()
+    expect(api.copyItem).toHaveBeenCalledWith('first')
+    expect(api.hideWindow).toHaveBeenCalledTimes(1)
+  })
+  it('shows the full preview without copying', async () => {
+    const { wrapper, api } = await setup()
+    await wrapper.get('.preview-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.preview-content pre').text()).toContain('second line')
+    expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalled()
+    expect(api.copyItem).not.toHaveBeenCalled()
+  })
+  it('starts a new invocation with an empty search and the newest record', async () => {
+    const { wrapper, api } = await setup([item('first'), item('second')])
+    await wrapper.get('#record-second').trigger('focus')
+    await wrapper.get('input').setValue('no-match')
+    emitShown()
+    await flushPromises()
+    expect(wrapper.get('input').element.value).toBe('')
+    await wrapper.get('input').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(api.copyItem).toHaveBeenCalledWith('first')
   })
   it('ignores an older history snapshot', async () => {
     const { buffer } = await setup()
