@@ -1,79 +1,76 @@
-# electron-vite-vue
+# ClipClip Manager
 
-🥳 Really simple `Electron` + `Vue` + `Vite` boilerplate.
+Настольная история буфера обмена для текстов и изображений. Приложение хранит
+последние 10 записей, позволяет искать по содержимому и приложению-источнику,
+копировать запись и отменять удаление в течение 10 секунд.
 
-<!-- [![awesome-vite](https://awesome.re/mentioned-badge.svg)](https://github.com/vitejs/awesome-vite) -->
-<!-- [![Netlify Status](https://api.netlify.com/api/v1/badges/ae3863e3-1aec-4eb1-8f9f-1890af56929d/deploy-status)](https://app.netlify.com/sites/electron-vite/deploys) -->
-<!-- [![GitHub license](https://img.shields.io/github/license/caoxiemeihao/electron-vite-vue)](https://github.com/electron-vite/electron-vite-vue/blob/main/LICENSE) -->
-<!-- [![GitHub stars](https://img.shields.io/github/stars/caoxiemeihao/electron-vite-vue?color=fa6470)](https://github.com/electron-vite/electron-vite-vue) -->
-<!-- [![GitHub forks](https://img.shields.io/github/forks/caoxiemeihao/electron-vite-vue)](https://github.com/electron-vite/electron-vite-vue) -->
-[![GitHub Build](https://github.com/electron-vite/electron-vite-vue/actions/workflows/build.yml/badge.svg)](https://github.com/electron-vite/electron-vite-vue/actions/workflows/build.yml)
-[![GitHub Discord](https://img.shields.io/badge/chat-discord-blue?logo=discord)](https://discord.gg/sRqjYpEAUK)
+## Использование
 
-## Features
+- Ctrl + Alt + B — открыть окно.
+- Стрелки вверх и вниз — выбрать запись.
+- Enter — скопировать выбранную запись и скрыть окно после успешного копирования.
+- Escape — сбросить поиск и фильтры; повторное нажатие скрывает окно.
+- Delete — удалить выбранную запись, когда фокус находится в списке.
+  В поле поиска эта клавиша редактирует текст.
+- Кнопка «Пауза» приостанавливает сбор истории.
+- Нажмите метку записи, чтобы добавить фильтр; поиск также предлагает фильтры.
+- Полный текст и изображение доступны через раскрытие превью.
 
-📦 Out of the box  
-🎯 Based on the official [template-vue-ts](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-vue-ts), less invasive  
-🌱 Extensible, really simple directory structure  
-💪 Support using Node.js API in Electron-Renderer  
-🔩 Support C/C++ native addons  
-🖥 It's easy to implement multiple windows  
+На Windows закрытие окна оставляет приложение в области уведомлений. Для
+завершения используйте «Выход» в меню значка ClipClip. Если сочетание клавиш
+занято, интерфейс сообщает об этом; доступны значок приложения и панель задач.
+Размер окна сохраняется во время сессии.
 
-## Quick Setup
+## Хранение и приватность
+
+Сбор работает в основном процессе Electron независимо от состояния окна.
+Опрос выполняется последовательно, без параллельных запросов. Содержимое буфера
+не выводится в журналы. История ограничена 10 записями и 32 МБ суммарно; запись
+больше 8 МБ или изображение больше 16 мегапикселей пропускается с уведомлением.
+
+История сохраняется в history.enc в системной папке данных приложения с
+шифрованием средствами ОС. Если безопасное шифрование недоступно, история
+остаётся только в памяти; это видно в интерфейсе. Linux basic_text не используется.
+Удаление убирает запись из сохраняемой истории; отмена хранится в памяти 10 секунд.
+Источник определяется приблизительно в момент опроса, без запросов новых
+разрешений ОС. Неподдерживаемый источник обозначается как «Неизвестно».
+
+## Разработка
+
+Нужен Node.js 24 (минимум 22.12) и npm.
 
 ```sh
-# clone the project
-git clone https://github.com/electron-vite/electron-vite-vue.git
-
-# enter the project directory
-cd electron-vite-vue
-
-# install dependency
-npm install
-
-# develop
+npm ci
 npm run dev
 ```
 
-## Debug
+Сервер разработки работает на http://127.0.0.1:3344. DevTools открываются только
+если в режиме разработки задана переменная CLIPCLIP_DEVTOOLS=1.
+В сборке приложение использует локальный защищённый протокол app://.
 
-![electron-vite-react-debug.gif](https://github.com/electron-vite/electron-vite-react/blob/main/electron-vite-react-debug.gif?raw=true)
-
-## Directory
-
-```diff
-+ ├─┬ electron
-+ │ ├─┬ main
-+ │ │ └── index.ts    entry of Electron-Main
-+ │ └─┬ preload
-+ │   └── index.ts    entry of Preload-Scripts
-  ├─┬ src
-  │ └── main.ts       entry of Electron-Renderer
-  ├── index.html
-  ├── package.json
-  └── vite.config.ts
+```sh
+npm run typecheck
+npm test
+npm run build:app
+npm run test:electron
+npm audit
 ```
 
-<!--
-## Be aware
+Electron-проверка использует синтетический буфер и отдельный временный профиль.
+Она не меняет системный буфер обмена. Снимки светлой, тёмной и компактной версий
+сохраняются в игнорируемую папку test-results. На Linux запускайте эту проверку
+в графической сессии или через xvfb-run -a npm run test:electron.
 
-🚨 By default, this template integrates Node.js in the Renderer process. If you don't need it, you just remove the option below. [Because it will modify the default config of Vite](https://github.com/electron-vite/vite-plugin-electron-renderer#config-presets-opinionated).
-
-```diff
-# vite.config.ts
-
-export default {
-  plugins: [
--   // Use Node.js API in the Renderer-process
--   renderer({
--     nodeIntegration: true,
--   }),
-  ],
-}
+```sh
+npm run build:win
+npm run build:win-portable
+npm run build:mac
+npm run build:linux
 ```
--->
 
-## FAQ
+Результаты находятся в release/<version>. Публикация отключена. Нативный модуль
+get-windows использует поставляемые N-API-бинарники; повторная сборка под ABI
+Electron не требуется. Исправленные версии tar и @electron/get закреплены через
+npm overrides и проверяются аудитом и упаковкой.
 
-- [C/C++ addons, Node.js modules - Pre-Bundling](https://github.com/electron-vite/vite-plugin-electron-renderer#dependency-pre-bundling)
-- [dependencies vs devDependencies](https://github.com/electron-vite/vite-plugin-electron-renderer#dependencies-vs-devdependencies)
+Коммиты оформляются по Conventional Commits; правила проекта находятся в AGENTS.md.
