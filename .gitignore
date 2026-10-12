@@ -24,7 +24,11 @@ release
 *.sln
 *.sw?
 
-# lockfile
-package-lock.json
+# Reproducible npm installs; other package managers are not used.
 pnpm-lock.yaml
 yarn.lock
+.serena/
+*.tsbuildinfo
+vite.config.*.timestamp-*.mjs
+coverage/
+test-results/

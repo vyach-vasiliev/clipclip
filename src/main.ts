@@ -1,31 +1,32 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
+import { createVuetify } from 'vuetify'
+import { VApp } from 'vuetify/components/VApp'
+import { VBtn } from 'vuetify/components/VBtn'
+import { VChip } from 'vuetify/components/VChip'
+import { VIcon } from 'vuetify/components/VIcon'
+import { VTextField } from 'vuetify/components/VTextField'
+import { VAlert } from 'vuetify/components/VAlert'
+import { VProgressLinear } from 'vuetify/components/VProgressLinear'
+import { Ripple } from 'vuetify/directives'
+import { aliases, mdi } from 'vuetify/iconsets/mdi-svg'
 import App from './App.vue'
 import router from './router'
-
+import 'vuetify/styles'
 import './style.css'
 
-import './demos/ipc'
-// If you want use Node.js, the`nodeIntegration` needs to be enabled in the Main process.
-// import './demos/node'
-
-// Vuetify
-import 'vuetify/styles'
-import { createVuetify } from 'vuetify'
-import * as components from 'vuetify/components'
-import * as directives from 'vuetify/directives'
-import '@mdi/font/css/materialdesignicons.css' // Ensure you are using css-loader
-
 const vuetify = createVuetify({
-    components,
-    directives,
+  components: { VApp, VBtn, VChip, VIcon, VTextField, VAlert, VProgressLinear },
+  directives: { Ripple },
+  icons: { defaultSet: 'mdi', aliases, sets: { mdi } },
+  theme: { defaultTheme: window.matchMedia('(prefers-color-scheme: dark)').matches ? 'clipclipDark' : 'clipclipLight',
+    themes: {
+      clipclipLight: { dark: false, colors: { primary: '#235cc4', info: '#235cc4', background: '#f4f6fa', surface: '#ffffff' } },
+      clipclipDark: { dark: true, colors: { primary: '#98bbff', info: '#98bbff', background: '#111723', surface: '#1b2433' } },
+    },
+  },
 })
-
-createApp(App)
-    .use(createPinia())
-    .use(vuetify)
-    .use(router)
-  .mount('#app')
-  .$nextTick(() => {
-    postMessage({ payload: 'removeLoading' }, '*')
-  })
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', event => {
+  vuetify.theme.global.name.value = event.matches ? 'clipclipDark' : 'clipclipLight'
+})
+createApp(App).use(createPinia()).use(vuetify).use(router).mount('#app')

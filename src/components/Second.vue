@@ -1,278 +1,183 @@
 <script setup lang="ts">
-import {ref, computed, onMounted, onUnmounted} from 'vue';
-import {ClipboardHistoryItem, ClipboardHistoryItemTag, queryInput, useBufferStore} from '../store/buffer';
-import SearchPanel from './SearchPanel.vue';
+import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
+import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline } from '@mdi/js'
+import { HISTORY_LIMIT, TAG_LABELS, tagKey, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
+import { useBufferStore } from '../store/buffer'
+import { adjacentId, filterHistory, highlightParts, historyTags, isEditingTarget, isActionTarget } from '../utils/history'
+import SearchPanel from './SearchPanel.vue'
 
-const searchField = ref(null);
-const searchPanelRef = ref<InstanceType<typeof SearchPanel>>();
-const selectedIndex = ref(0);
-const selectedTags = ref<ClipboardHistoryItemTag[]>([]);
-
-const allTags = computed((): ClipboardHistoryItemTag[] => {
-  const tags = new Set<string>();
-  bufferStore.clipboardHistory.forEach(item => {
-    item.params.tags?.forEach(tag => {
-      tags.add(`${tag.code}:${tag.value}`);
-    });
-  });
-  return Array.from(tags).map(tag => {
-    const [code, value] = tag.split(':');
-    return { code, value };
-  });
-});
-
-const bufferStore = useBufferStore();
-
-const filteredClipboardHistory = computed(() => {
-  const query = queryInput.value.toLowerCase().trim();
-  
-  let clipboardHistory = bufferStore.clipboardHistory;
-  
-  return clipboardHistory.filter(item => {
-    // Фильтрация по тексту (если есть запрос)
-    const textMatches = !query || 
-      (item.type === 'text' && item.data.toLowerCase().includes(query)) ||
-      item.params.tags?.some(tag => tag.value.toLowerCase().includes(query));
-    
-    // Фильтрация по тегам (если есть выбранные теги)
-    const tagsMatch = selectedTags.value.length === 0 || 
-      selectedTags.value.every(selectedTag => 
-        item.params.tags?.some(tag => 
-          tag.code === selectedTag.code && 
-          tag.value === selectedTag.value
-        )
-      );
-    
-    return textMatches && tagsMatch && !item.isDeleted;
-  });
-});
-
-const showTagSuggestions = computed(() => {
-  return queryInput.value.trim().length > 0;
-});
-
-const suggestedTags = computed(() => {
-  console.log("queryInput", allTags.value);
-  const query = queryInput.value.toLowerCase().trim();
-  if (!query) return [];
-  
-  return allTags.value.filter(tag => 
-    {
-      return tag.value.toLowerCase().includes(query) ||
-    tag.code.toLowerCase().includes(query)
-    }
-  );
-});
-
-const highlightTextAsHTML = (text: string) => {
-  const query = queryInput.value.toLowerCase().trim();
-  if (!query) return text;
-  const regex = new RegExp(query, 'gi');
-  return text.replace(regex, '<mark class="query-mark">$&</mark>');
+const buffer = useBufferStore()
+const search = ref('')
+const selectedTags = ref<ClipboardTag[]>([])
+const selectedId = ref<string | null>(null)
+const searchPanel = ref<InstanceType<typeof SearchPanel>>()
+const announcement = ref('')
+const copyingId = ref<string | null>(null)
+let unsubscribeShown: (() => void) | undefined
+let announcementTimer: ReturnType<typeof setTimeout> | undefined
+const allTags = computed(() => historyTags(buffer.clipboardHistory))
+const filtered = computed(() => filterHistory(buffer.clipboardHistory, search.value, selectedTags.value))
+const selected = computed(() => filtered.value.find(item => item.id === selectedId.value))
+const tagLabels = TAG_LABELS
+function recordLabel(item: ClipboardHistoryItem) {
+  return item.type === 'text' ? 'Текст: ' + (item.data.trim() ? item.data.slice(0, 160).replace(/\s+/g, ' ') : 'Пробелы и переносы строк')
+    : 'Изображение, ' + item.params.size
 }
 
-const handleKeydown = (event: KeyboardEvent) => {
-  // Check if the pressed key is a letter and not a special key
-  if (event.key === 'Meta' || event.key === 'Control' || event.key === 'Shift') return;
-  if (event.ctrlKey || event.altKey || event.metaKey) return;
+watch(() => filtered.value.map(item => item.id), ids => {
+  if (!selectedId.value || !ids.includes(selectedId.value)) selectedId.value = ids[0] ?? null
+}, { immediate: true, flush: 'sync' })
 
-  console.log("keyEvent", event);
-
-  if (/^[a-zA-Zа-яА-Я0-9\s]$/.test(event.key)) {
-    searchPanelRef.value?.searchField?.focus(); // Set autofocus on the search field
+function announce(message: string) {
+  announcement.value = message
+  if (announcementTimer) clearTimeout(announcementTimer)
+  announcementTimer = setTimeout(() => { announcement.value = '' }, 4000)
+}
+function clearFilters() { search.value = ''; selectedTags.value = [] }
+function select(item: ClipboardHistoryItem) { selectedId.value = item.id }
+async function copy(item: ClipboardHistoryItem | undefined, hide = false) {
+  if (!item || buffer.busy) return
+  copyingId.value = item.id
+  const copied = await buffer.copy(item.id)
+  copyingId.value = null
+  if (copied) {
+    announce('Скопировано в буфер обмена.')
+    if (hide) await buffer.hide()
   }
-
-  if (event.key === "ArrowDown") {
-    selectedIndex.value = (selectedIndex.value + 1) % filteredClipboardHistory.value.length
-    console.log("selectedIndex.value", selectedIndex.value)
-  } else if (event.key === "ArrowUp") {
-    selectedIndex.value =
-        (selectedIndex.value - 1 + filteredClipboardHistory.value.length) %
-        filteredClipboardHistory.value.length
+}
+async function remove(item: ClipboardHistoryItem) {
+  if (await buffer.remove(item.id)) announce('Запись удалена. Отмена доступна 10 секунд.')
+}
+async function move(direction: number) {
+  selectedId.value = adjacentId(filtered.value.map(item => item.id), selectedId.value, direction)
+  await nextTick()
+  if (selectedId.value) {
+    const element = document.getElementById('record-' + selectedId.value)
+    element?.focus({ preventScroll: true })
+    element?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
   }
-
-  if (event.key === "Enter") {
-    const item = filteredClipboardHistory.value[selectedIndex.value]
-    copyToClipboard(item)
+}
+function handleKeydown(event: KeyboardEvent) {
+  if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return
+  const editing = isEditingTarget(event.target)
+  const otherAction = isActionTarget(event.target)
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    if (search.value || selectedTags.value.length) clearFilters()
+    else void buffer.hide()
+    return
   }
-
-  if (event.key === "Delete") {
-    const item = filteredClipboardHistory.value[selectedIndex.value]
-    const historyIndex = bufferStore.clipboardHistory.indexOf(item)
-    bufferStore.clipboardHistory[historyIndex].isDeleted = true
+  if (otherAction || (editing && !(event.target instanceof HTMLInputElement))) return
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    void move(event.key === 'ArrowDown' ? 1 : -1)
+  } else if (event.key === 'Enter') {
+    event.preventDefault()
+    void copy(selected.value, true)
+  } else if (event.key === 'Delete' && !editing && selected.value) {
+    event.preventDefault()
+    void remove(selected.value)
+  } else if (!editing && Array.from(event.key).length === 1) {
+    searchPanel.value?.focus()
   }
-
-};
-
-const handleSelectedTagsUpdate = (tags: ClipboardHistoryItemTag[]) => {
-  selectedTags.value = tags;
-};
-
-const handleTagClick = (tag: ClipboardHistoryItemTag) => {
-  searchPanelRef.value?.addSelectedTag(tag);
-};
+}
+function shortText(item: ClipboardHistoryItem) { return item.data.slice(0, 1200) }
 
 onMounted(() => {
-  document.addEventListener('keydown', handleKeydown);
-  bufferStore.loadClipboard();
-});
-
-onUnmounted(() => {
-  document.removeEventListener('keydown', handleKeydown);
-});
-
-
-const copyTextToClipboard = async (text: string) => {
-  navigator.clipboard.writeText(text).then(() => {
-    console.log('Text copied:', text);
-  }).catch((err) => {
-    console.error('Failed to copy text:', err);
-  });
-}
-const copyImageToClipboard = async (base64: string) => {
-  try {
-    // 1️⃣ Убираем `data:image/png;base64,` (или другой формат)
-    const [headers, base64Data] = base64.split(',');
-    // console.log(base64);
-    const typeData = headers.split(';')[0].split(':')[1];
-
-    if (['image/png', 'image/jpeg', 'image/gif', 'image/bmp', 'image/webp', 'image/svg+xml'].indexOf(typeData) === -1){
-      console.log('Wrong image type:', typeData);
-      throw new Error(`Wrong image type: ${typeData}`);
-    }
-
-
-    // 2️⃣ Преобразуем base64 → бинарные данные
-    const binaryData = atob(base64Data);
-    const arrayBuffer = new Uint8Array(binaryData.length);
-    for (let i = 0; i < binaryData.length; i++) {
-      arrayBuffer[i] = binaryData.charCodeAt(i);
-    }
-
-    // 3️⃣ Создаём Blob (изображение, тип PNG)
-    const blob = new Blob([arrayBuffer], { type: 'image/png' });
-
-    // 4️⃣ Копируем в буфер обмена через Clipboard API
-    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-
-    console.log('Image copied to clipboard!');
-  } catch (err) {
-    console.error('Failed to copy image:', err);
-  }
-};
-
-const copyToClipboard = (item: ClipboardHistoryItem) => {
-  // if (!text.data) return;
-  if (item.type === 'text'){
-    copyTextToClipboard(item.data);
-  } else if (item.type === 'image') {
-    copyImageToClipboard(item.data);
-  }
-};
-
-const selectIndex = (index: number) => {
-  selectedIndex.value = index;
-};
-
-
+  document.addEventListener('keydown', handleKeydown)
+  unsubscribeShown = window.electronAPI?.onWindowShown(() => searchPanel.value?.focus())
+  searchPanel.value?.focus()
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', handleKeydown)
+  unsubscribeShown?.()
+  if (announcementTimer) clearTimeout(announcementTimer)
+})
 </script>
-<style>
-body {
-  background: #f3f4f6;
-}
-
-#clipboard-history {
-  background-color: #e2e8f0;
-  border-radius: 10px;
-}
-
-#clipboard-history .clipboard-item {
-}
-
-#clipboard-history .clipboard-item .card-body {
-  width: 300px;
-  min-height: 20px;
-  max-height: 60px;
-  font-size: .8em;
-}
-
-.query-mark {
-  background-color: #bacce6;
-}
-
-.v-chip-group .v-chip {
-  margin-right: 3px!important;
-}
-.v-chip-group .copy-chip {
-  visibility: hidden!important;
-}
-.v-card:hover .v-chip-group .copy-chip {
-  visibility: visible!important;
-}
-.v-card {
-  border: 2px solid transparent!important;
-}
-.v-card.selected {
-  border: 2px solid #42a5f5!important;
-  background-color: #e3f2fd!important;
-}
-</style>
 
 <template>
-  <v-container class="ma-0">
-    <SearchPanel 
-      ref="searchPanelRef"
-      v-model="queryInput"
-      :all-tags="allTags"
-      @update:selectedTags="handleSelectedTagsUpdate"
-    />
-    
-    <div id="clipboard-history" class="d-flex flex-wrap flex-column justify-center pt-2 pb-4"
-         style="min-height: 300px;">
+  <main class="history-page">
+    <header class="page-header">
+      <div>
+        <div class="brand-line"><v-icon :icon="mdiClipboardTextOutline" aria-hidden="true" /><span>ClipClip</span></div>
+        <h1>История буфера обмена</h1>
+        <p class="intro">Скопированные тексты и изображения всегда под рукой.</p>
+      </div>
+      <v-btn variant="outlined" :prepend-icon="buffer.paused ? mdiPlay : mdiPause" :disabled="buffer.busy || buffer.loading"
+        @click="buffer.setPaused(!buffer.paused)">{{ buffer.paused ? 'Продолжить запись' : 'Пауза' }}</v-btn>
+    </header>
 
-      <!--    <v-infinite-scroll v-if="bufferStore.clipboardHistory.length" :items="bufferStore.clipboardHistory" @load="">-->
-      <template v-for="(item, index) in filteredClipboardHistory" :key="item">
-        <v-card class="clipboard-item ml-3 mt-2 mr-3" :class="{ selected: index === selectedIndex }" @click="selectIndex(index)">
-          <v-card-text class="card-body pa-2">
-
-            <template v-if="item.type === 'text'" v-show="!queryInput.trim() || item.data.includes(queryInput.trim())">
-<!--              <p v-html="highlightTextAsHTML(item.data)"></p>-->
-<!--              <p v-html="item.data"></p>-->
-              <p v-text="item.data.trim() == '' ? '<spaces>' : item.data"></p>
-            </template>
-            <template v-else-if="item.type === 'image'">
-              <img :src="item.data" alt="Clipboard Image" style="max-width: 200px;" aspect-ratio="16/9" cover/>
-            </template>
-            <!--        <template v-else-if="item.type === 'file'">-->
-            <!--          📂 Файл: <a :href="item.data" target="_blank">{{ item.data }}</a>-->
-            <!--        </template>-->
-
-          </v-card-text>
-
-          <div class="flex-wrap flex-column justify-space-between">
-
-<!--            <v-chip-group selected-class="bg-deep-purple-lighten-2" class="ml-1 mb-0 pa-0">-->
-            <v-chip-group class="ml-1 mb-0 pa-0 tags-group">
-              <v-chip 
-              v-for="(tag, index) in item.params.tags" :key="index" class="chip" size="x-small" label variant="outlined" style="background-color: #FFF;" @click="handleTagClick(tag)"
-              >{{ tag.value }}</v-chip>
-
-              <v-chip size="x-small" class="copy-chip ml-auto" label variant="flat"
-                      @click="copyToClipboard(item)">Copy</v-chip>
-            </v-chip-group>
-
-          </div>
-        </v-card>
-      </template>
-
-      <template v-if="filteredClipboardHistory.length === 0">
-        <v-card class="clipboard-item ml-3 mt-2 mr-3">
-          <v-card-text class="card-body pa-2">
-            <p>Nothing found</p>
-          </v-card-text>
-        </v-card>
-      </template>
+    <div class="status-row">
+      <span class="capture-status"><span :class="['status-dot', { paused: buffer.paused }]" />{{ buffer.paused ? 'Запись приостановлена' : 'Запись включена' }}</span>
+      <span>{{ buffer.persistent ? 'История сохраняется с шифрованием' : 'История только в памяти этой сессии' }}</span>
     </div>
-    <!--    </v-infinite-scroll>-->
-  </v-container>
+    <v-alert v-if="buffer.error" type="error" variant="tonal" role="alert" class="notice">{{ buffer.error }}</v-alert>
+    <v-alert v-if="!buffer.loading && !buffer.shortcutAvailable" type="info" variant="tonal" class="notice">
+      Ctrl + Alt + B недоступна. Открывайте ClipClip через область уведомлений или панель задач.
+    </v-alert>
+    <SearchPanel ref="searchPanel" v-model="search" v-model:selected-tags="selectedTags" :all-tags="allTags" />
+
+    <section class="history-section" aria-labelledby="history-title" :aria-busy="buffer.loading">
+      <div class="section-heading">
+        <h2 id="history-title">{{ search || selectedTags.length ? 'Результаты поиска' : 'Последние записи' }}</h2>
+        <span class="record-count">{{ filtered.length }} / {{ HISTORY_LIMIT }}</span>
+      </div>
+      <v-progress-linear v-if="buffer.loading" indeterminate aria-label="Загрузка истории" />
+      <div v-else-if="!filtered.length" class="empty-state">
+        <v-icon :icon="mdiClipboardTextOutline" size="40" aria-hidden="true" />
+        <h3>{{ search || selectedTags.length ? 'Совпадений нет' : 'История пока пуста' }}</h3>
+        <p>{{ search || selectedTags.length ? 'Попробуйте другой запрос или уберите фильтры.' : buffer.paused ? 'Продолжите запись и скопируйте текст или изображение.' : 'Скопируйте текст или изображение в любом приложении — запись появится здесь.' }}</p>
+        <v-btn v-if="search || selectedTags.length" variant="text" @click="clearFilters">Сбросить поиск и фильтры</v-btn>
+      </div>
+
+      <ul v-else class="history-list">
+        <li v-for="item in filtered" :key="item.id">
+          <article class="clipboard-record" :class="{ selected: item.id === selectedId }">
+            <div class="record-topline">
+              <span class="muted">{{ item.type === 'text' ? 'Текст' : 'Изображение' }}</span>
+              <div class="record-actions">
+                <v-btn variant="tonal" :prepend-icon="mdiContentCopy" :loading="copyingId === item.id" :disabled="buffer.busy"
+                  :aria-label="'Скопировать запись. ' + recordLabel(item)" @click="copy(item)">Копировать</v-btn>
+                <v-btn variant="text" :icon="mdiDeleteOutline" :disabled="buffer.busy" :aria-label="'Удалить запись. ' + recordLabel(item)" @click="remove(item)" />
+              </div>
+            </div>
+            <button :id="'record-' + item.id" class="record-select" :aria-pressed="item.id === selectedId"
+              :aria-label="recordLabel(item) + ', ' + item.params.source.name"
+              :tabindex="item.id === selectedId ? 0 : -1" @focus="select(item)" @click="select(item)">
+              <p v-if="item.type === 'text'" class="text-preview">
+                <span v-if="!item.data.trim()" class="muted">Пробелы и переносы строк</span>
+                <template v-else v-for="(part, index) in highlightParts(shortText(item), search)" :key="index">
+                  <mark v-if="part.matched" class="query-mark">{{ part.text }}</mark><span v-else>{{ part.text }}</span>
+                </template>
+              </p>
+              <img v-else :src="item.data" :alt="'Изображение из буфера, ' + item.params.size" class="image-preview" loading="lazy" />
+            </button>
+            <details v-if="item.type === 'text' && (item.data.length > 240 || item.data.split('\n').length > 4)" class="full-preview">
+              <summary>Полный текст</summary><pre>{{ item.data }}</pre>
+            </details>
+            <details v-if="item.type === 'image'" class="full-preview">
+              <summary>Изображение целиком</summary><img :src="item.data" :alt="'Полное изображение, ' + item.params.size" />
+            </details>
+            <footer class="record-footer">
+              <div class="record-tags" aria-label="Свойства и фильтры">
+                <v-chip v-for="tag in item.params.tags" :key="tagKey(tag)" variant="outlined"
+                  :title="tagLabels[tag.code] + ': ' + tag.value + (tag.code === 'source' ? ' (приблизительно)' : '')"
+                  @click="searchPanel?.addSelectedTag(tag)">{{ tag.value }}</v-chip>
+              </div>
+            </footer>
+          </article>
+        </li>
+      </ul>
+    </section>
+
+    <div class="feedback-row">
+      <p role="status" aria-live="polite">{{ announcement }}</p>
+      <v-btn v-if="buffer.canUndo" variant="text" :prepend-icon="mdiUndo" :disabled="buffer.busy" @click="buffer.undo">Отменить удаление</v-btn>
+    </div>
+    <footer class="keyboard-help" aria-label="Горячие клавиши">
+      <span><kbd>↑</kbd><kbd>↓</kbd> выбор</span><span><kbd>Enter</kbd> копировать и скрыть</span>
+      <span><kbd>Esc</kbd> сбросить поиск / скрыть</span><span><kbd>Delete</kbd> удалить в списке</span>
+      <span class="show-shortcut"><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>B</kbd> открыть</span>
+    </footer>
+  </main>
 </template>
