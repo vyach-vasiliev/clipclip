@@ -2,6 +2,5 @@ import { defineConfig } from 'vitest/config'
 import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   plugins: [vue()],
-  test: { include: ['tests/**/*.test.ts'], environment: 'node', restoreMocks: true,
-    server: { deps: { inline: ['vuetify'] } } },
+  test: { include: ['tests/**/*.test.ts'], environment: 'node', restoreMocks: true },
 })

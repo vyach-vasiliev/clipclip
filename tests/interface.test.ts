@@ -2,14 +2,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { createVuetify } from 'vuetify'
-import { VBtn } from 'vuetify/components/VBtn'
-import { VChip } from 'vuetify/components/VChip'
-import { VIcon } from 'vuetify/components/VIcon'
-import { VTextField } from 'vuetify/components/VTextField'
-import { VAlert } from 'vuetify/components/VAlert'
-import { VProgressLinear } from 'vuetify/components/VProgressLinear'
-import { aliases, mdi } from 'vuetify/iconsets/mdi-svg'
 import Second from '../src/components/Second.vue'
 import { useBufferStore } from '../src/store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags } from '../src/utils/history'
@@ -40,9 +32,7 @@ async function setup(items?: ClipboardHistoryItem[]) {
   setActivePinia(pinia)
   const buffer = useBufferStore()
   await buffer.connect()
-  const vuetify = createVuetify({ components: { VBtn, VChip, VIcon, VTextField, VAlert, VProgressLinear },
-    icons: { defaultSet: 'mdi', aliases, sets: { mdi } } })
-  const wrapper = mount(Second, { attachTo: document.body, global: { plugins: [pinia, vuetify] } })
+  const wrapper = mount(Second, { attachTo: document.body, global: { plugins: [pinia] } })
   wrappers.push(wrapper)
   await flushPromises()
   return { wrapper, api, buffer }
@@ -79,6 +69,28 @@ describe('search and navigation', () => {
     const { wrapper, api } = await setup()
     await wrapper.get('input').trigger('keydown', { key: 'Delete' })
     expect(api.deleteItem).not.toHaveBeenCalled()
+  })
+  it('applies and removes a suggested badge while returning focus to search', async () => {
+    const other = item('other')
+    other.params.source.name = 'Other app'
+    other.params.tags = [{ code: 'source', value: 'Other app' }]
+    const { wrapper } = await setup([item('first'), other])
+    await wrapper.get('input').setValue('#Fixture')
+    await wrapper.get('.suggestions .tag-badge').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.record-select')).toHaveLength(1)
+    expect(wrapper.get('input').element.value).toBe('')
+    expect(document.activeElement).toBe(wrapper.get('input').element)
+    await wrapper.get('[aria-label="Выбранные фильтры"] .tag-badge').trigger('click')
+    expect(wrapper.findAll('.record-select')).toHaveLength(2)
+  })
+  it('clears a query using the native clear button', async () => {
+    const { wrapper } = await setup()
+    await wrapper.get('input').setValue('no-match')
+    await wrapper.get('[aria-label="Очистить поиск"]').trigger('click')
+    expect(wrapper.get('input').element.value).toBe('')
+    expect(wrapper.findAll('.record-select')).toHaveLength(1)
+    expect(document.activeElement).toBe(wrapper.get('input').element)
   })
   it('recovers selection after navigating an empty result set', async () => {
     const { wrapper, api } = await setup()

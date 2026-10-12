@@ -118,6 +118,18 @@ async function run() {
     assert.equal(await evaluate('document.querySelector(".history-list").scrollHeight > document.querySelector(".history-list").clientHeight'), true)
     assert.equal(await evaluate('getComputedStyle(document.querySelector(".history-list"), "::-webkit-scrollbar").width'), '7px')
     assert.equal(await evaluate('getComputedStyle(document.querySelector(".history-list"), "::-webkit-scrollbar-button").display'), 'none')
+    await evaluate('document.querySelector("input").value="#"; document.querySelector("input").dispatchEvent(new Event("input",{bubbles:true}))')
+    await delay(100)
+    assert.ok(await evaluate('document.querySelectorAll(".suggestions .tag-badge").length > 0'))
+    nativeTheme.themeSource = 'light'
+    await delay(100)
+    await screenshot(window, 'badges-light.png')
+    nativeTheme.themeSource = 'dark'
+    await delay(100)
+    await screenshot(window, 'badges-dark.png')
+    await evaluate('document.querySelector("input").value=""; document.querySelector("input").dispatchEvent(new Event("input",{bubbles:true}))')
+    nativeTheme.themeSource = 'light'
+    await delay(100)
     await evaluate('document.querySelector(".preview-button").click()')
     await delay(100)
     assert.equal(await evaluate('document.querySelector("dialog").open'), true)

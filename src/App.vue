@@ -7,5 +7,5 @@ onBeforeUnmount(buffer.disconnect)
 </script>
 
 <template>
-  <v-app><router-view /></v-app>
+  <div class="h-dvh min-h-0 bg-canvas text-ink"><router-view /></div>
 </template>

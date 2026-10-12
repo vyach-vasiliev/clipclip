@@ -1,7 +1,10 @@
 # ClipClip development
 
 Work in this repository's current checkout unless the user requests another one.
-The renderer uses Vue, Pinia, Vuetify and plain CSS; keep those conventions.
+The renderer uses Vue, Pinia and Tailwind CSS v4 through the Vite plugin.
+Use native semantic controls and Tailwind utilities; share design tokens in
+src/style.css. Keep custom CSS for browser-specific or shared visual details.
+Do not reintroduce Vuetify or another component styling framework.
 
 Clipboard collection and writes belong in the Electron main process. The renderer
 uses the typed, channel-specific API from shared/clipboard.ts. Do not restore a
