@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose } from '@mdi/js'
+import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck } from '@mdi/js'
 import { HISTORY_LIMIT, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
 import { useBufferStore } from '../store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags, isEditingTarget, isActionTarget } from '../utils/history'
 import SearchPanel from './SearchPanel.vue'
+import { useTextEditor } from '../composables/textEditor'
 
 const buffer = useBufferStore()
 const search = ref('')
@@ -16,6 +17,10 @@ const copyingId = ref<string | null>(null)
 const previewDialog = ref<HTMLDialogElement>()
 const previewId = ref<string | null>(null)
 const preview = computed(() => buffer.clipboardHistory.find(item => item.id === previewId.value))
+const editor = useTextEditor(buffer.saveRevision)
+const { draft, editing, saving, saveError, originalText, savedText } = editor
+const textArea = ref<HTMLTextAreaElement>()
+const previewKind = ref<'text' | 'image'>('text')
 let unsubscribeShown: (() => void) | undefined
 let announcementTimer: ReturnType<typeof setTimeout> | undefined
 const allTags = computed(() => historyTags(buffer.clipboardHistory))
@@ -38,11 +43,29 @@ function announce(message: string) {
 function clearFilters() { search.value = ''; selectedTags.value = [] }
 function select(item: ClipboardHistoryItem) { selectedId.value = item.id }
 async function openPreview(item: ClipboardHistoryItem) {
+  if (!await editor.flush()) return
   previewId.value = item.id
+  previewKind.value = item.type
+  editor.load(item)
   await nextTick()
   previewDialog.value?.showModal()
 }
-function prepareQuickPick() {
+async function closePreview() {
+  if (!await editor.flush()) return
+  previewDialog.value?.close()
+}
+async function toggleEditing() {
+  await editor.toggle()
+  if (editing.value) { await nextTick(); textArea.value?.focus() }
+}
+async function copyPreview() {
+  if (previewKind.value === 'text') {
+    if (!await editor.flush()) return
+    if (editor.currentId.value) await copyById(editor.currentId.value, true)
+  } else await copy(preview.value, true)
+}
+async function prepareQuickPick() {
+  if (!await editor.flush()) { previewDialog.value?.showModal(); return }
   previewDialog.value?.close()
   clearFilters()
   selectedId.value = filtered.value[0]?.id ?? null
@@ -50,9 +73,12 @@ function prepareQuickPick() {
   document.querySelector('.history-list')?.scrollTo({ top: 0 })
 }
 async function copy(item: ClipboardHistoryItem | undefined, hide = false) {
-  if (!item || buffer.busy) return
-  copyingId.value = item.id
-  const copied = await buffer.copy(item.id)
+  if (item) await copyById(item.id, hide)
+}
+async function copyById(id: string, hide = false) {
+  if (buffer.busy) return
+  copyingId.value = id
+  const copied = await buffer.copy(id)
   copyingId.value = null
   if (copied) {
     announce('Скопировано в буфер обмена.')
@@ -174,15 +200,27 @@ onBeforeUnmount(() => {
       <span><kbd>↑</kbd><kbd>↓</kbd> выбор</span><span><kbd>Enter</kbd> копировать</span><span><kbd>Esc</kbd> скрыть</span>
     </footer>
 
-    <dialog ref="previewDialog" class="preview-dialog" aria-labelledby="preview-title" @keydown.stop>
-      <div class="preview-heading"><h2 id="preview-title">{{ preview?.type === 'image' ? 'Изображение' : 'Полный текст' }}</h2>
-        <v-btn variant="text" :icon="mdiClose" aria-label="Закрыть просмотр" @click="previewDialog?.close()" /></div>
+    <dialog ref="previewDialog" class="preview-dialog" aria-labelledby="preview-title" @keydown.stop @cancel.prevent="closePreview">
+      <div class="preview-heading"><h2 id="preview-title">{{ previewKind === 'image' ? 'Изображение' : 'Полный текст' }}</h2>
+        <div class="preview-tools">
+          <v-btn v-if="previewKind === 'text'" class="edit-toggle" variant="text" :icon="editing ? mdiCheck : mdiPencilOutline"
+            :aria-pressed="editing" :aria-label="editing ? 'Завершить редактирование' : 'Редактировать текст'"
+            :title="editing ? 'Завершить редактирование' : 'Редактировать текст'" @click="toggleEditing" />
+          <v-btn v-if="editing" class="reset-edit" variant="text" :icon="mdiRestore" :disabled="draft === originalText && draft === savedText"
+            aria-label="Сбросить к исходному тексту" title="Сбросить к исходному тексту" @click="editor.reset" />
+          <v-btn class="close-preview" variant="text" :icon="mdiClose" aria-label="Закрыть просмотр" @click="closePreview" />
+        </div>
+      </div>
       <div class="preview-content">
-        <pre v-if="preview?.type === 'text'">{{ preview.data }}</pre>
+        <textarea v-if="editing" ref="textArea" v-model="draft" class="text-editor" aria-label="Редактирование полного текста" spellcheck="false" />
+        <pre v-else-if="previewKind === 'text'">{{ draft }}</pre>
         <img v-else-if="preview" :src="preview.data" :alt="'Полное изображение, ' + preview.params.size" />
         <p v-else>Запись уже удалена.</p>
       </div>
-      <v-btn v-if="preview" variant="tonal" :prepend-icon="mdiContentCopy" :loading="copyingId === preview.id" :disabled="buffer.busy" @click="copy(preview, true)">Копировать и скрыть</v-btn>
+      <p v-if="saveError" class="editor-error" role="alert">{{ saveError }}</p>
+      <p v-else-if="buffer.error" class="editor-error" role="alert">{{ buffer.error }}</p>
+      <p v-else-if="editing" class="editor-status" role="status">{{ saving ? 'Сохраняется…' : draft !== savedText ? 'Есть изменения…' : 'Версии сохраняются в истории' }}</p>
+      <v-btn v-if="previewKind === 'text' || preview" variant="tonal" :prepend-icon="mdiContentCopy" :loading="saving || copyingId !== null" :disabled="buffer.busy" @click="copyPreview">Копировать и скрыть</v-btn>
     </dialog>
   </main>
 </template>

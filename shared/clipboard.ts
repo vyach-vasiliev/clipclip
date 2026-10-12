@@ -49,6 +49,7 @@ export interface ElectronAPI {
   getHistory(): Promise<HistoryState>
   onHistoryChanged(callback: (state: HistoryState) => void): () => void
   copyItem(id: string): Promise<void>
+  saveTextRevision(id: string, text: string): Promise<ClipboardHistoryItem>
   deleteItem(id: string): Promise<void>
   undoDelete(): Promise<void>
   setPaused(paused: boolean): Promise<void>
@@ -60,6 +61,7 @@ export const CHANNELS = {
   getHistory: 'history:get',
   changed: 'history:changed',
   copyItem: 'history:copy',
+  saveTextRevision: 'history:save-text-revision',
   deleteItem: 'history:delete',
   undoDelete: 'history:undo',
   setPaused: 'history:pause',

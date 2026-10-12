@@ -32,6 +32,7 @@ async function setup(items?: ClipboardHistoryItem[]) {
     onHistoryChanged: vi.fn(callback => { emitState = callback; return vi.fn() }),
     onWindowShown: vi.fn(callback => { emitShown = callback; return vi.fn() }),
     copyItem: vi.fn(async () => {}), deleteItem: vi.fn(async () => {}), undoDelete: vi.fn(async () => {}),
+    saveTextRevision: vi.fn(async (_id, text) => item('edited', text)),
     setPaused: vi.fn(async () => {}), hideWindow: vi.fn(async () => {}),
   }
   window.electronAPI = api

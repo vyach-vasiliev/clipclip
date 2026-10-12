@@ -4,6 +4,7 @@ import { writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import '../dist-electron/main/index.js'
+import { checkWindowsShortcut } from './windows-shortcut-check.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 process.on('uncaughtException', error => { console.error(error); app.exit(1) })
@@ -45,8 +46,12 @@ async function run() {
     const capabilities = await evaluate('({api: Object.keys(window.electronAPI), genericIPC: typeof window.ipcRenderer, records: document.querySelectorAll(".record-select").length})')
     assert.equal(capabilities.genericIPC, 'undefined')
     assert.equal(capabilities.records, 2)
-    assert.deepEqual(capabilities.api.sort(), ['copyItem', 'deleteItem', 'getHistory', 'hideWindow', 'onHistoryChanged', 'onWindowShown', 'setPaused', 'undoDelete'].sort())
+    assert.deepEqual(capabilities.api.sort(), ['copyItem', 'saveTextRevision', 'deleteItem', 'getHistory', 'hideWindow', 'onHistoryChanged', 'onWindowShown', 'setPaused', 'undoDelete'].sort())
     assert.equal(window.webContents.isDevToolsOpened(), false)
+    if (process.platform === 'win32' && process.env.CLIPCLIP_TEST_SHORTCUT === '1') {
+      assert.equal(await evaluate('(await window.electronAPI.getHistory()).shortcutAvailable'), true)
+      await checkWindowsShortcut(window)
+    }
     if (process.platform === 'win32') {
       const { activeWindow } = await import('get-windows')
       await activeWindow({ accessibilityPermission: false, screenRecordingPermission: false })
@@ -91,6 +96,9 @@ async function run() {
     await delay(200)
     assert.equal(await evaluate('(await window.electronAPI.getHistory()).items.length'), 2)
     assert.equal(BrowserWindow.getAllWindows().length, 1)
+    if (process.platform === 'win32' && process.env.CLIPCLIP_TEST_SHORTCUT === '1') {
+      assert.equal(await evaluate('(await window.electronAPI.getHistory()).shortcutAvailable'), true)
+    }
     await evaluate('location.href="app://other/index.html"')
     await delay(100)
     assert.ok(window.webContents.getURL().startsWith(process.env.VITE_DEV_SERVER_URL || 'app://clipclip/index.html'))
@@ -108,12 +116,31 @@ async function run() {
     await delay(100)
     assert.equal(await evaluate('(await window.electronAPI.getHistory()).items.length'), 10)
     assert.equal(await evaluate('document.querySelector(".history-list").scrollHeight > document.querySelector(".history-list").clientHeight'), true)
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".history-list"), "::-webkit-scrollbar").width'), '7px')
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".history-list"), "::-webkit-scrollbar-button").display'), 'none')
     await evaluate('document.querySelector(".preview-button").click()')
     await delay(100)
     assert.equal(await evaluate('document.querySelector("dialog").open'), true)
     await screenshot(window, 'preview.png')
-    await evaluate('document.querySelector("dialog button").click()')
+    const originalText = await evaluate('document.querySelector(".preview-content pre").textContent')
+    await evaluate('document.querySelector(".edit-toggle").click()')
+    await delay(50)
+    await evaluate('document.querySelector("textarea").value = "Промежуточная версия"; document.querySelector("textarea").dispatchEvent(new Event("input",{bubbles:true}))')
+    await delay(850)
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).items[0].data'), 'Промежуточная версия')
+    await evaluate('document.querySelector("textarea").value = "Последний вариант"; document.querySelector("textarea").dispatchEvent(new Event("input",{bubbles:true}))')
+    await evaluate('document.querySelector(".reset-edit").click()')
+    await delay(100)
+    const versions = await evaluate('(await window.electronAPI.getHistory()).items.map(item => item.data)')
+    assert.equal(versions[0], originalText)
+    assert.ok(versions.includes('Промежуточная версия'))
+    assert.ok(versions.includes('Последний вариант'))
+    await screenshot(window, 'editor.png')
+    await evaluate('document.querySelector("textarea").value = "Версия при закрытии"; document.querySelector("textarea").dispatchEvent(new Event("input",{bubbles:true}))')
+    await evaluate('document.querySelector(".close-preview").click()')
+    await delay(100)
     assert.equal(await evaluate('document.querySelector("dialog").open'), false)
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).items[0].data'), 'Версия при закрытии')
 
     nativeTheme.themeSource = 'light'
     await delay(150)

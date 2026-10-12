@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { assetPath, isTrustedPage, requireId } from '../electron/main/security'
+import { assetPath, isTrustedPage, requireId, requireTextRevision } from '../electron/main/security'
+import { MAX_ITEM_BYTES } from '../shared/clipboard'
 
 describe('renderer trust boundary', () => {
   const entry = 'app://clipclip/index.html'
@@ -22,5 +23,11 @@ describe('renderer trust boundary', () => {
   })
   it.each([null, '', {}, 'a'.repeat(101)])('rejects invalid IPC identifiers', id => {
     expect(() => requireId(id)).toThrow()
+  })
+  it('validates revision payloads and limits UTF-8 bytes', () => {
+    expect(requireTextRevision({ id: 'one', text: '' })).toEqual({ id: 'one', text: '' })
+    for (const payload of [null, { id: '' }, { id: 'one', text: 1 }, { id: 'one', text: 'я'.repeat(MAX_ITEM_BYTES / 2 + 1) }]) {
+      expect(() => requireTextRevision(payload)).toThrow()
+    }
   })
 })

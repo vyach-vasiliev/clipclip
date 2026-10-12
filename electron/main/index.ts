@@ -5,7 +5,8 @@ import { createHash } from 'node:crypto'
 import { CHANNELS, MAX_ITEM_BYTES, UNKNOWN_SOURCE, type ClipboardSnapshot, type HistoryState } from '../../shared/clipboard'
 import { ClipboardHistory, ClipboardMonitor } from './history'
 import { EncryptedHistoryStorage } from './storage'
-import { assetPath, isTrustedPage, requireId } from './security'
+import { assetPath, isTrustedPage, requireId, requireTextRevision } from './security'
+import { registerWindowsShortcut } from './windowsShortcut'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const rendererRoot = path.join(root, 'dist')
@@ -21,6 +22,7 @@ let win: BrowserWindow | null = null
 let tray: Tray | null = null
 let quitting = false
 let shortcutAvailable = false
+let disposeWindowShortcut: (() => void) | null = null
 let persistent = false
 let storageError: string | null = null
 let storage: EncryptedHistoryStorage | null = null
@@ -130,6 +132,10 @@ function registerIpc() {
       image: item.type === 'image' ? { data: item.data, width: 1, height: 1 } : null })
   })
   handle(CHANNELS.deleteItem, value => history.delete(requireId(value)))
+  handle(CHANNELS.saveTextRevision, value => {
+    const { id, text } = requireTextRevision(value)
+    return history.saveTextRevision(id, text)
+  })
   handle(CHANNELS.undoDelete, () => history.undoDelete())
   handle(CHANNELS.setPaused, value => {
     if (typeof value !== 'boolean') throw new Error('Некорректное состояние записи.')
@@ -157,6 +163,12 @@ function createWindow() {
     webPreferences: { preload, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
   })
   const created = win
+  if (process.platform === 'win32' && (!testMode || process.env.CLIPCLIP_TEST_SHORTCUT === '1')) {
+    disposeWindowShortcut?.()
+    try { disposeWindowShortcut = registerWindowsShortcut(created, showWindow) }
+    catch { disposeWindowShortcut = null }
+    shortcutAvailable = !!disposeWindowShortcut
+  }
   created.setMenu(null)
   created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   created.webContents.on('will-navigate', event => { if (!isTrustedPage(event.url, entry)) event.preventDefault() })
@@ -169,7 +181,11 @@ function createWindow() {
   created.on('close', event => {
     if (!quitting && process.platform !== 'darwin' && tray) { event.preventDefault(); created.hide() }
   })
-  created.on('closed', () => { if (win === created) win = null })
+  created.on('closed', () => {
+    disposeWindowShortcut?.()
+    disposeWindowShortcut = null
+    if (win === created) win = null
+  })
   void created.loadURL(entry).catch(() => { storageError = 'Не удалось открыть интерфейс приложения.' })
   if (!app.isPackaged && process.env.CLIPCLIP_DEVTOOLS === '1') created.webContents.openDevTools()
 }
@@ -226,7 +242,7 @@ async function initialize() {
       updateTray()
     } catch { tray = null }
   }
-  shortcutAvailable = !testMode && globalShortcut.register('Ctrl+Alt+B', showWindow)
+  shortcutAvailable = !testMode && process.platform !== 'win32' && globalShortcut.register('Ctrl+Alt+B', showWindow)
   createWindow()
   monitor.start()
 }
@@ -241,6 +257,8 @@ app.on('before-quit', event => {
   monitor.stop()
   history.dispose()
   globalShortcut.unregisterAll()
+  disposeWindowShortcut?.()
+  disposeWindowShortcut = null
   if (storage) {
     event.preventDefault()
     void storage.flush().catch(() => {}).finally(() => app.quit())

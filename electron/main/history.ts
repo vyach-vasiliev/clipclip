@@ -66,6 +66,32 @@ export class ClipboardHistory {
     this.previous = this.fingerprints(snapshot)
   }
 
+  private add(type: 'text' | 'image', data: string, size: string, source: ClipboardSource): ClipboardHistoryItem {
+    const existing = this.items.find(item => item.type === type && item.data === data)
+    this.items = this.items.filter(item => item !== existing)
+    const item: ClipboardHistoryItem = {
+      id: existing?.id ?? randomUUID(), type, data, createdAt: this.deps.now?.() ?? Date.now(),
+      params: { size, type, source, tags: [
+        { code: 'size', value: size },
+        { code: 'type', value: type === 'text' ? 'Текст' : 'Изображение' },
+        { code: 'source', value: source.name },
+      ] },
+    }
+    this.items.unshift(item)
+    return item
+  }
+
+  saveTextRevision(id: string, text: string): ClipboardHistoryItem {
+    const original = this.items.find(item => item.id === id && item.type === 'text')
+    if (!original) throw new Error('Исходная запись уже удалена.')
+    if (Buffer.byteLength(text, 'utf8') > MAX_ITEM_BYTES) throw new Error('Текст больше 8 МБ.')
+    if (original.data === text) return original
+    const item = this.add('text', text, `${text.length} симв.`, original.params.source)
+    this.trim()
+    this.notify()
+    return item
+  }
+
   async capture(): Promise<void> {
     if (this.busy || this.paused) return
     this.busy = true
@@ -87,16 +113,7 @@ export class ClipboardHistory {
           this.error = 'Запись больше 8 МБ пропущена.'
           return
         }
-        const existing = this.items.find(item => item.type === type && item.data === data)
-        this.items = this.items.filter(item => item !== existing)
-        this.items.unshift({
-          id: existing?.id ?? randomUUID(), type, data, createdAt: this.deps.now?.() ?? Date.now(),
-          params: { size, type, source, tags: [
-            { code: 'size', value: size },
-            { code: 'type', value: type === 'text' ? 'Текст' : 'Изображение' },
-            { code: 'source', value: source.name },
-          ] },
-        })
+        this.add(type, data, size, source)
       }
       if (textChanged && snapshot.text) add('text', snapshot.text, `${snapshot.text.length} симв.`)
       if (imageChanged && snapshot.image && /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(snapshot.image.data)) {

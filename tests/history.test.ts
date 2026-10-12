@@ -14,6 +14,36 @@ function setup(snapshot: ClipboardSnapshot = { text: 'hello', image: null }) {
 afterEach(() => { active.splice(0).forEach(history => history.dispose()); vi.useRealTimers() })
 
 describe('clipboard history', () => {
+  it('preserves earlier text versions and resets without erasing edits', async () => {
+    const { history } = setup()
+    await history.capture()
+    const original = history.items[0]
+    const first = history.saveTextRevision(original.id, 'first edit')
+    const second = history.saveTextRevision(first.id, 'second edit')
+    const reset = history.saveTextRevision(second.id, original.data)
+    expect(history.items.map(item => item.data)).toEqual(['hello', 'second edit', 'first edit'])
+    expect(reset.id).toBe(original.id)
+    expect(first.params.source).toEqual(original.params.source)
+    expect(first.params.size).toBe('10 симв.')
+  })
+  it('permits an empty revision while paused and leaves the system clipboard untouched', async () => {
+    const { history, read } = setup()
+    await history.capture()
+    history.setPaused(true)
+    history.saveTextRevision(history.items[0].id, '')
+    expect(history.items[0].data).toBe('')
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(() => history.saveTextRevision('missing', 'edit')).toThrow()
+  })
+  it('keeps editing through history eviction and enforces revision limits', async () => {
+    const { history } = setup()
+    await history.capture()
+    let id = history.items[0].id
+    for (let index = 0; index < 20; index++) id = history.saveTextRevision(id, 'edit ' + index).id
+    expect(history.items).toHaveLength(HISTORY_LIMIT)
+    expect(() => history.saveTextRevision(id, 'x'.repeat(MAX_ITEM_BYTES + 1))).toThrow()
+    expect(history.items[0].data).toBe('edit 19')
+  })
   it('captures text and image once for an unchanged snapshot', async () => {
     const { history } = setup({ text: 'hello', image })
     for (let index = 0; index < 5; index++) await history.capture()

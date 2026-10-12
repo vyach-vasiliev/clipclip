@@ -11,6 +11,7 @@ const api: ElectronAPI = {
   getHistory: () => ipcRenderer.invoke(CHANNELS.getHistory),
   onHistoryChanged: callback => subscribe<HistoryState>(CHANNELS.changed, callback),
   copyItem: id => ipcRenderer.invoke(CHANNELS.copyItem, id),
+  saveTextRevision: (id, text) => ipcRenderer.invoke(CHANNELS.saveTextRevision, { id, text }),
   deleteItem: id => ipcRenderer.invoke(CHANNELS.deleteItem, id),
   undoDelete: () => ipcRenderer.invoke(CHANNELS.undoDelete),
   setPaused: paused => ipcRenderer.invoke(CHANNELS.setPaused, paused),

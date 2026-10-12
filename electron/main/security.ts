@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { MAX_ITEM_BYTES } from '../../shared/clipboard'
 
 export function isTrustedPage(candidate: string, entry: string): boolean {
   try {
@@ -25,4 +26,14 @@ export function assetPath(url: string, root: string): string | null {
 export function requireId(value: unknown): string {
   if (typeof value !== 'string' || !value || value.length > 100) throw new Error('Некорректный идентификатор записи.')
   return value
+}
+
+export function requireTextRevision(value: unknown): { id: string; text: string } {
+  if (!value || typeof value !== 'object') throw new Error('Некорректная версия текста.')
+  const revision = value as { id?: unknown; text?: unknown }
+  const id = requireId(revision.id)
+  if (typeof revision.text !== 'string' || Buffer.byteLength(revision.text, 'utf8') > MAX_ITEM_BYTES) {
+    throw new Error('Текст должен быть не больше 8 МБ.')
+  }
+  return { id, text: revision.text }
 }

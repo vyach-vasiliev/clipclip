@@ -76,7 +76,8 @@ export const useBufferStore = defineStore('buffer', () => {
     () => window.electronAPI!.setPaused(value), 'Не удалось изменить состояние записи.',
   )
   const hide = () => action(() => window.electronAPI!.hideWindow(), 'Не удалось скрыть окно.')
+  const saveRevision = (id: string, text: string) => window.electronAPI!.saveTextRevision(id, text)
 
   return { clipboardHistory, loading, paused, persistent, shortcutAvailable, canUndo, error,
-    busy, connect, disconnect, copy, remove, undo, setPaused, hide }
+    busy, connect, disconnect, copy, remove, undo, setPaused, hide, saveRevision }
 })

@@ -32,18 +32,19 @@
     "electron": "^44.7.0",
     "electron-builder": "^26.15.3",
     "jsdom": "^27.0.0",
+    "pinia": "^3.0.1",
     "typescript": "~5.9.3",
     "vite": "^8.3.4",
     "vite-plugin-electron": "^1.1.2",
     "vitest": "^5.0.4",
-    "vue-tsc": "^3.3.13",
     "vue": "^3.5.43",
-    "pinia": "^3.0.1",
     "vue-router": "^4.6.4",
+    "vue-tsc": "^3.3.13",
     "vuetify": "^3.13.6"
   },
   "dependencies": {
-    "get-windows": "^9.3.0"
+    "get-windows": "^9.3.0",
+    "koffi": "^3.3.3"
   },
   "overrides": {
     "tar": "^7.5.22",
