@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck, mdiFullscreen, mdiFullscreenExit, mdiMagnifyPlusOutline, mdiMagnifyMinusOutline, mdiFitToScreenOutline } from '@mdi/js'
+import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck, mdiFullscreen, mdiFullscreenExit, mdiMagnifyPlusOutline, mdiMagnifyMinusOutline, mdiFitToScreenOutline, mdiChevronLeft, mdiChevronRight } from '@mdi/js'
 import { HISTORY_LIMIT, KIND_LABELS, type ClipboardKind, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
 import { useBufferStore } from '../store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags, isEditingTarget, isActionTarget } from '../utils/history'
 import SearchPanel from './SearchPanel.vue'
 import AppIcon from './AppIcon.vue'
+import TagBadge from './TagBadge.vue'
 import { useTextEditor } from '../composables/textEditor'
 import { useImageZoom } from '../composables/imageZoom'
 
@@ -23,7 +24,8 @@ const editor = useTextEditor(buffer.saveRevision)
 const { draft, editing, saving, saveError, originalText, savedText } = editor
 const textArea = ref<HTMLTextAreaElement>()
 const previewKind = ref<ClipboardKind>('text')
-const previewIsText = computed(() => previewKind.value !== 'image' && !preview.value?.fileUris)
+const previewFiles = ref(false)
+const previewIsText = computed(() => previewKind.value !== 'image' && !previewFiles.value)
 const previewOpen = ref(false)
 const fullscreen = ref(false)
 const imageZoom = useImageZoom()
@@ -34,6 +36,13 @@ let announcementTimer: ReturnType<typeof setTimeout> | undefined
 const allTags = computed(() => historyTags(buffer.clipboardHistory))
 const filtered = computed(() => filterHistory(buffer.clipboardHistory, search.value, selectedTags.value))
 const selected = computed(() => filtered.value.find(item => item.id === selectedId.value))
+const previewIndex = computed(() => filtered.value.findIndex(item => item.id === previewId.value))
+const navigatingPreview = ref(false)
+const navigationBlocked = computed(() => editing.value || saving.value || buffer.busy || navigatingPreview.value)
+const canPreviewPrevious = computed(() => !navigationBlocked.value && previewIndex.value > 0)
+const canPreviewNext = computed(() => !navigationBlocked.value && previewIndex.value >= 0 && previewIndex.value < filtered.value.length - 1)
+watch(editor.currentId, id => { if (previewOpen.value && id) previewId.value = id })
+watch(preview, item => { if (item) previewKind.value = item.type })
 function recordLabel(item: ClipboardHistoryItem) {
   return item.type !== 'image' ? KIND_LABELS[item.type] + ': ' + (item.data.trim() ? shortText(item).slice(0, 160).replace(/\s+/g, ' ') : 'Пробелы и переносы строк')
     : 'Изображение, ' + item.params.size
@@ -54,13 +63,22 @@ async function openPreview(item: ClipboardHistoryItem) {
   if (!await editor.flush()) return
   previewId.value = item.id
   previewKind.value = item.type
+  previewFiles.value = !!item.fileUris
+  selectedId.value = item.id
   imageZoom.reset()
   editor.load(item)
   await nextTick()
-  previewDialog.value?.showModal()
+  if (!previewOpen.value) previewDialog.value?.showModal()
   previewOpen.value = true
   const image = previewDialog.value?.querySelector<HTMLImageElement>('.zoom-image')
   if (image?.complete) imageZoom.loadImage(image)
+}
+async function movePreview(direction: number) {
+  if (!previewOpen.value || (direction < 0 ? !canPreviewPrevious.value : !canPreviewNext.value)) return
+  const item = filtered.value[previewIndex.value + direction]
+  if (!item) return
+  navigatingPreview.value = true
+  try { await openPreview(item) } finally { navigatingPreview.value = false }
 }
 async function setPreviewFullscreen(value: boolean) {
   if (!await buffer.setFullscreen(value)) return false
@@ -92,6 +110,10 @@ function handlePreviewKeydown(event: KeyboardEvent) {
     if (event.repeat || buffer.busy) return
     if (fullscreen.value) void setPreviewFullscreen(false)
     else void closePreview()
+  } else if (!editing.value && !isEditingTarget(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey
+    && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+    event.preventDefault()
+    void movePreview(event.key === 'ArrowLeft' ? -1 : 1)
   }
 }
 async function toggleEditing() {
@@ -109,6 +131,7 @@ async function prepareQuickPick() {
   if (!await dismissPreview()) return
   clearFilters()
   selectedId.value = filtered.value[0]?.id ?? null
+  await nextTick()
   searchPanel.value?.focus()
   document.querySelector('.history-list')?.scrollTo({ top: 0 })
 }
@@ -137,11 +160,38 @@ async function move(direction: number) {
     element?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
   }
 }
-function capturePreviewEscape(event: KeyboardEvent) {
-  if (event.key === 'Escape' && previewOpen.value && !event.isComposing) {
+function capturePreviewKeys(event: KeyboardEvent) {
+  if (previewOpen.value && !event.isComposing && (event.key === 'Escape'
+    || (!editing.value && !isEditingTarget(event.target) && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')))) {
     event.stopImmediatePropagation()
     handlePreviewKeydown(event)
   }
+}
+function focusSearchOnActivation() {
+  if (!previewOpen.value) searchPanel.value?.focus()
+}
+function captureSearchTyping(event: KeyboardEvent) {
+  if (previewOpen.value || event.defaultPrevented || isEditingTarget(event.target)) return
+  const altGraph = event.getModifierState('AltGraph')
+  if ((event.ctrlKey || event.metaKey) && !event.altKey
+    && (event.code === 'KeyV' || event.key.toLowerCase() === 'v')) {
+    searchPanel.value?.focus()
+    return
+  }
+  if (event.key === 'Process' || event.keyCode === 229) { searchPanel.value?.focus(); return }
+  if (event.isComposing || ((!altGraph && (event.ctrlKey || event.altKey)) || event.metaKey)
+    || Array.from(event.key).length !== 1) return
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  searchPanel.value?.insertText(event.key)
+}
+function captureSearchPaste(event: ClipboardEvent) {
+  if (previewOpen.value || event.defaultPrevented || isEditingTarget(event.target)) return
+  const text = event.clipboardData?.getData('text/plain')
+  if (!text) return
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  searchPanel.value?.insertText(text)
 }
 function handleKeydown(event: KeyboardEvent) {
   if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return
@@ -150,7 +200,7 @@ function handleKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     event.preventDefault()
     if (event.repeat) return
-    if (search.value || selectedTags.value.length) clearFilters()
+    if (search.value || selectedTags.value.length) { clearFilters(); searchPanel.value?.focus() }
     else void buffer.hide()
     return
   }
@@ -164,8 +214,6 @@ function handleKeydown(event: KeyboardEvent) {
   } else if (event.key === 'Delete' && !editing && selected.value) {
     event.preventDefault()
     void remove(selected.value)
-  } else if (!editing && Array.from(event.key).length === 1) {
-    searchPanel.value?.focus()
   }
 }
 function shortText(item: ClipboardHistoryItem) {
@@ -173,15 +221,21 @@ function shortText(item: ClipboardHistoryItem) {
 }
 
 onMounted(() => {
-  document.addEventListener('keydown', capturePreviewEscape, true)
+  document.addEventListener('keydown', capturePreviewKeys, true)
+  document.addEventListener('keydown', captureSearchTyping, true)
+  document.addEventListener('paste', captureSearchPaste, true)
   document.addEventListener('keydown', handleKeydown)
+  window.addEventListener('focus', focusSearchOnActivation)
   unsubscribeShown = window.electronAPI?.onWindowShown(prepareQuickPick)
   unsubscribeFullscreen = window.electronAPI?.onPreviewFullscreenChanged(value => { fullscreen.value = value })
   searchPanel.value?.focus()
 })
 onBeforeUnmount(() => {
-  document.removeEventListener('keydown', capturePreviewEscape, true)
+  document.removeEventListener('keydown', capturePreviewKeys, true)
+  document.removeEventListener('keydown', captureSearchTyping, true)
+  document.removeEventListener('paste', captureSearchPaste, true)
   document.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('focus', focusSearchOnActivation)
   unsubscribeShown?.()
   unsubscribeFullscreen?.()
   if (announcementTimer) clearTimeout(announcementTimer)
@@ -267,6 +321,15 @@ onBeforeUnmount(() => {
           <button type="button" class="close-preview icon-button" aria-label="Закрыть просмотр" @click="closePreview"><AppIcon :path="mdiClose" /></button>
         </div>
       </div>
+      <div class="preview-navigation flex shrink-0 items-center justify-between gap-2" aria-label="Навигация по записям">
+        <button type="button" class="preview-previous icon-button" :disabled="!canPreviewPrevious" aria-label="Предыдущая запись" title="Предыдущая запись (←)" @click="movePreview(-1)"><AppIcon :path="mdiChevronLeft" /></button>
+        <span class="text-xs text-muted tabular-nums" role="status">{{ editing ? 'Редактирование' : (previewIndex >= 0 ? previewIndex + 1 : '—') + ' / ' + filtered.length }}</span>
+        <button type="button" class="preview-next icon-button" :disabled="!canPreviewNext" aria-label="Следующая запись" title="Следующая запись (→)" @click="movePreview(1)"><AppIcon :path="mdiChevronRight" /></button>
+      </div>
+      <div v-if="preview" class="preview-metadata flex shrink-0 flex-wrap gap-1.5" aria-label="Метки и источник записи">
+        <TagBadge v-for="tag in preview.params.tags" :key="JSON.stringify([tag.code, tag.value])" :tag="tag" />
+      </div>
+      <p v-if="preview?.params.source.title" class="shrink-0 truncate text-[11px] text-muted" :title="preview.params.source.title">{{ preview.params.source.title }}</p>
       <div v-if="previewKind === 'image' && preview" class="flex shrink-0 items-center justify-center gap-1" aria-label="Масштаб изображения">
         <button type="button" class="zoom-out icon-button" aria-label="Уменьшить изображение" title="Уменьшить" :disabled="!imageNatural.width || imageScale <= .01" @click="imageZoom.zoom(-1)"><AppIcon :path="mdiMagnifyMinusOutline" /></button>
         <button type="button" class="zoom-percent text-button min-w-16 tabular-nums" aria-label="Масштаб 100 процентов" title="Исходный размер — 100%" :disabled="!imageNatural.width" @click="imageZoom.setScale(1)">{{ imagePercent }}%</button>

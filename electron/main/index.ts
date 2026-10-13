@@ -224,7 +224,7 @@ function createWindow() {
   })
   created.webContents.on('will-attach-webview', event => event.preventDefault())
   created.webContents.on('did-finish-load', broadcast)
-  created.once('ready-to-show', () => { created.show(); created.focus() })
+  created.once('ready-to-show', showWindow)
   created.on('close', event => {
     if (!quitting && process.platform !== 'darwin' && tray) {
       event.preventDefault()

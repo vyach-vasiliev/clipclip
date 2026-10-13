@@ -49,6 +49,99 @@ beforeEach(() => {
 afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); document.body.innerHTML = ''; delete window.electronAPI; vi.unstubAllGlobals() })
 
 describe('search and navigation', () => {
+  it.each([['.record-select', 'я'], ['.preview-button', '#'], ['header .icon-button', ' '], ['main', '🙂']])('starts search from %s without losing or duplicating %s', async (target, key) => {
+    const { wrapper, api } = await setup()
+    const element = wrapper.get(target).element as HTMLElement
+    element.focus()
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })
+    element.dispatchEvent(event)
+    await flushPromises()
+    expect(event.defaultPrevented).toBe(true)
+    expect(wrapper.get('input').element.value).toBe(key)
+    expect(document.activeElement).toBe(wrapper.get('input').element)
+    expect(api.copyItem).not.toHaveBeenCalled()
+    expect(api.setPaused).not.toHaveBeenCalled()
+    expect(HTMLDialogElement.prototype.showModal).not.toHaveBeenCalled()
+  })
+  it('clears search and filters on Escape and returns focus from a list action', async () => {
+    const { wrapper, api } = await setup()
+    await wrapper.get('input').setValue('#text')
+    await wrapper.get('.suggestions .tag-badge').trigger('click')
+    await wrapper.get('input').setValue('fixture')
+    const action = wrapper.get('.preview-button').element as HTMLButtonElement
+    action.focus()
+    await wrapper.get('.preview-button').trigger('keydown', { key: 'Escape' })
+    expect(wrapper.get('input').element.value).toBe('')
+    expect(wrapper.find('[aria-label="Выбранные фильтры"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('input').element)
+    expect(api.hideWindow).not.toHaveBeenCalled()
+  })
+  it('focuses search on first show, every new invocation and return to the main window', async () => {
+    const { wrapper } = await setup()
+    const input = wrapper.get('input').element
+    expect(document.activeElement).toBe(input)
+    ;(wrapper.get('.preview-button').element as HTMLButtonElement).focus()
+    window.dispatchEvent(new Event('focus'))
+    expect(document.activeElement).toBe(input)
+    await wrapper.get('input').setValue('fixture')
+    emitShown(); await flushPromises()
+    expect(document.activeElement).toBe(input)
+    expect(input.value).toBe('')
+  })
+  it('replaces the search selection and routes paste from outside the field', async () => {
+    const { wrapper } = await setup()
+    await wrapper.get('input').setValue('fixture')
+    const input = wrapper.get('input').element
+    input.setSelectionRange(1, 4)
+    const action = wrapper.get('.preview-button').element as HTMLButtonElement
+    action.focus()
+    await wrapper.get('.preview-button').trigger('keydown', { key: 'A', shiftKey: true })
+    expect(input.value).toBe('fAure')
+    await wrapper.get('input').setValue('')
+    const paste = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(paste, 'clipboardData', { value: { getData: () => 'pasted query' } })
+    wrapper.get('main').element.dispatchEvent(paste)
+    await flushPromises()
+    expect(input.value).toBe('pasted query')
+    expect(document.activeElement).toBe(input)
+  })
+  it('leaves document editing and its cursor keys outside the search shortcut', async () => {
+    const { wrapper, api } = await setup([item('first'), item('second')])
+    await wrapper.get('.preview-button').trigger('click'); await flushPromises()
+    await wrapper.get('.edit-toggle').trigger('click'); await flushPromises()
+    expect(wrapper.get('.preview-next').attributes('disabled')).toBeDefined()
+    const input = wrapper.get('input').element
+    const textarea = wrapper.get('textarea').element
+    textarea.focus()
+    await wrapper.get('textarea').trigger('keydown', { key: 'a' })
+    await wrapper.get('textarea').trigger('keydown', { key: 'ArrowRight' })
+    window.dispatchEvent(new Event('focus'))
+    expect(document.activeElement).toBe(textarea)
+    expect(input.value).toBe('')
+    expect(api.copyItem).not.toHaveBeenCalled()
+    expect(textarea.value).toContain('fixture')
+  })
+  it('navigates within the filtered preview list, shows metadata, and preserves fullscreen', async () => {
+    const first = item('first', 'first note'), second = item('second', 'second note'), excluded = item('excluded', 'outside')
+    second.params.source = { name: 'Other app', title: 'Second document window' }
+    second.params.tags = [{ code: 'type', value: 'Текст' }, { code: 'source', value: 'Other app' }]
+    const { wrapper, api } = await setup([first, second, excluded])
+    await wrapper.get('input').setValue('note')
+    await wrapper.get('.preview-button').trigger('click'); await flushPromises()
+    expect(wrapper.get('.preview-previous').attributes('disabled')).toBeDefined()
+    await wrapper.get('.fullscreen-toggle').trigger('click'); await flushPromises()
+    await wrapper.get('dialog').trigger('keydown', { key: 'ArrowRight' }); await flushPromises()
+    expect(wrapper.get('.preview-content pre').text()).toBe('second note')
+    expect(wrapper.get('.preview-metadata').text()).toContain('Other app')
+    expect(wrapper.get('dialog').text()).toContain('Second document window')
+    expect(wrapper.get('.preview-next').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('dialog').classes()).toContain('is-fullscreen')
+    expect(api.setPreviewFullscreen).toHaveBeenCalledTimes(1)
+    expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalledTimes(1)
+    await wrapper.get('.preview-previous').trigger('click'); await flushPromises()
+    expect(wrapper.get('.preview-content pre').text()).toBe('first note')
+    expect(api.copyItem).not.toHaveBeenCalled()
+  })
   it.each([['document', 'Документ', '#doc'], ['link', 'Ссылка', '#url']] as const)('searches, previews and copies %s records through English badges', async (kind, label, query) => {
     const record = item('special', kind === 'link' ? 'https://example.test' : 'document paragraph')
     record.type = record.params.type = kind

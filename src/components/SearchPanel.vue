@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { mdiMagnify, mdiClose, mdiApplicationOutline, mdiFormatText, mdiRuler, mdiImageOutline, mdiCounter, mdiFileDocumentOutline, mdiLinkVariant } from '@mdi/js'
+import { mdiMagnify, mdiClose } from '@mdi/js'
 import { tagKey, TAG_LABELS, type ClipboardTag } from '../../shared/clipboard'
 import AppIcon from './AppIcon.vue'
-import { matchesTag, tagKind } from '../../shared/content'
+import { matchesTag } from '../../shared/content'
+import TagBadge from './TagBadge.vue'
 
 const props = defineProps<{ allTags: ClipboardTag[]; modelValue: string; selectedTags: ClipboardTag[] }>()
 const emit = defineEmits<{
@@ -19,24 +20,6 @@ const suggestions = computed(() => {
     && matchesTag(tag, text)).slice(0, 8)
 })
 const labels = TAG_LABELS
-const badgeColors = {
-  source: 'bg-sky-500/10 text-sky-800 dark:bg-sky-400/15 dark:text-sky-200',
-  text: 'bg-violet-500/10 text-violet-800 dark:bg-violet-400/15 dark:text-violet-200',
-  image: 'bg-emerald-500/10 text-emerald-800 dark:bg-emerald-400/15 dark:text-emerald-200',
-  document: 'bg-orange-500/10 text-orange-800 dark:bg-orange-400/15 dark:text-orange-200',
-  link: 'bg-indigo-500/10 text-indigo-800 dark:bg-indigo-400/15 dark:text-indigo-200',
-  length: 'bg-amber-500/10 text-amber-800 dark:bg-amber-400/15 dark:text-amber-200',
-  size: 'bg-rose-500/10 text-rose-800 dark:bg-rose-400/15 dark:text-rose-200',
-  other: 'bg-slate-500/10 text-slate-700 dark:bg-slate-400/15 dark:text-slate-200',
-}
-const badgeIcons = { source: mdiApplicationOutline, text: mdiFormatText, image: mdiImageOutline,
-  document: mdiFileDocumentOutline, link: mdiLinkVariant, length: mdiCounter, size: mdiRuler, other: mdiFormatText }
-function badgeCategory(tag: ClipboardTag): keyof typeof badgeColors {
-  if (tag.code === 'source') return 'source'
-  const value = tag.value.toLocaleLowerCase()
-  if (tag.code === 'size') return value.includes('симв') ? 'length' : 'size'
-  return tagKind(tag) ?? 'other'
-}
 function addSelectedTag(tag: ClipboardTag) {
   if (!props.selectedTags.some(selected => tagKey(selected) === tagKey(tag))) emit('update:selectedTags', [...props.selectedTags, tag])
   emit('update:modelValue', '')
@@ -48,7 +31,14 @@ function removeTag(tag: ClipboardTag) {
 }
 function clearSearch() { query.value = ''; focus() }
 function focus() { searchField.value?.focus() }
-defineExpose({ focus, addSelectedTag })
+function insertText(text: string) {
+  const field = searchField.value
+  if (!field) return
+  focus()
+  field.setRangeText(text, field.selectionStart ?? field.value.length, field.selectionEnd ?? field.value.length, 'end')
+  query.value = field.value
+}
+defineExpose({ focus, insertText, addSelectedTag })
 </script>
 
 <template>
@@ -63,18 +53,14 @@ defineExpose({ focus, addSelectedTag })
     <div v-if="selectedTags.length" class="filter-row mt-1 flex min-h-10 items-center gap-1 overflow-x-auto" aria-label="Выбранные фильтры">
       <button v-for="tag in selectedTags" :key="tagKey(tag)" type="button" class="tag-badge group inline-flex min-h-10 shrink-0 items-center rounded-lg"
         :aria-label="'Убрать фильтр. ' + labels[tag.code] + ': ' + tag.value" :title="labels[tag.code] + ': ' + tag.value" @click="removeTag(tag)">
-        <span class="inline-flex h-7 max-w-56 items-center gap-1.5 rounded-md px-2 text-xs font-medium ring-1 ring-inset ring-current/30 group-hover:ring-current/50" :class="badgeColors[badgeCategory(tag)]">
-          <AppIcon :path="badgeIcons[badgeCategory(tag)]" class="size-3.5" /><span class="truncate">{{ tag.value }}</span><AppIcon :path="mdiClose" class="size-3.5" />
-        </span>
+        <TagBadge :tag="tag" removable />
       </button>
       <button type="button" class="text-button shrink-0 text-xs" @click="emit('update:selectedTags', []); focus()">Сбросить</button>
     </div>
     <div v-if="suggestions.length" class="filter-row suggestions mt-1 flex min-h-10 items-center gap-1 overflow-x-auto" aria-label="Предлагаемые фильтры">
       <button v-for="tag in suggestions" :key="tagKey(tag)" type="button" class="tag-badge group inline-flex min-h-10 shrink-0 items-center rounded-lg"
         :aria-label="'Добавить фильтр. ' + labels[tag.code] + ': ' + tag.value" :title="labels[tag.code] + ': ' + tag.value" @click="addSelectedTag(tag)">
-        <span class="inline-flex h-7 max-w-56 items-center gap-1.5 rounded-md px-2 text-xs font-medium ring-1 ring-inset ring-current/10 group-hover:ring-current/25" :class="badgeColors[badgeCategory(tag)]">
-          <AppIcon :path="badgeIcons[badgeCategory(tag)]" class="size-3.5" /><span class="truncate">{{ tag.value }}</span>
-        </span>
+        <TagBadge :tag="tag" />
       </button>
     </div>
   </section>
