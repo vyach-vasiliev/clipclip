@@ -53,6 +53,9 @@
 }
 
 /* Chromium-specific controls remain CSS; layout and components use Tailwind. */
+.window-drag { -webkit-app-region: drag; }
+.window-drag button { -webkit-app-region: no-drag; }
+.image-viewport { overflow-anchor: none; }
 .history-page { --scroll-thumb: color-mix(in srgb, var(--muted) 45%, transparent); --scroll-hover: color-mix(in srgb, var(--accent) 65%, transparent); }
 .history-page ::-webkit-scrollbar { width: 7px; height: 7px; }
 .history-page ::-webkit-scrollbar-track, .history-page ::-webkit-scrollbar-corner { background: transparent; }

@@ -188,7 +188,7 @@ function showWindow() {
 function createWindow() {
   win = new BrowserWindow({
     title: 'ClipClip Manager', width: 460, height: 560, minWidth: 380, minHeight: 420,
-    show: false, icon, autoHideMenuBar: true,
+    show: false, icon, autoHideMenuBar: true, frame: process.platform !== 'win32',
     webPreferences: { preload, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
   })
   const created = win

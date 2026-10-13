@@ -26,7 +26,7 @@ const previewKind = ref<'text' | 'image'>('text')
 const previewOpen = ref(false)
 const fullscreen = ref(false)
 const imageZoom = useImageZoom()
-const { viewport: imageViewport, natural: imageNatural, scale: imageScale, percent: imagePercent, imageStyle } = imageZoom
+const { viewport: imageViewport, natural: imageNatural, scale: imageScale, percent: imagePercent, imageStyle, canvasStyle } = imageZoom
 let unsubscribeShown: (() => void) | undefined
 let unsubscribeFullscreen: (() => void) | undefined
 let announcementTimer: ReturnType<typeof setTimeout> | undefined
@@ -86,9 +86,11 @@ function handlePreviewKeydown(event: KeyboardEvent) {
     && (event.code === 'KeyF' || event.key.toLowerCase() === 'f')) {
     event.preventDefault()
     if (!event.repeat) togglePreviewFullscreen()
-  } else if (event.key === 'Escape' && fullscreen.value) {
+  } else if (event.key === 'Escape') {
     event.preventDefault()
-    if (!buffer.busy) void setPreviewFullscreen(false)
+    if (event.repeat || buffer.busy) return
+    if (fullscreen.value) void setPreviewFullscreen(false)
+    else void closePreview()
   }
 }
 async function toggleEditing() {
@@ -134,12 +136,19 @@ async function move(direction: number) {
     element?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
   }
 }
+function capturePreviewEscape(event: KeyboardEvent) {
+  if (event.key === 'Escape' && previewOpen.value && !event.isComposing) {
+    event.stopImmediatePropagation()
+    handlePreviewKeydown(event)
+  }
+}
 function handleKeydown(event: KeyboardEvent) {
   if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return
   const editing = isEditingTarget(event.target)
   const otherAction = isActionTarget(event.target)
   if (event.key === 'Escape') {
     event.preventDefault()
+    if (event.repeat) return
     if (search.value || selectedTags.value.length) clearFilters()
     else void buffer.hide()
     return
@@ -161,12 +170,14 @@ function handleKeydown(event: KeyboardEvent) {
 function shortText(item: ClipboardHistoryItem) { return item.data.slice(0, 1200) }
 
 onMounted(() => {
+  document.addEventListener('keydown', capturePreviewEscape, true)
   document.addEventListener('keydown', handleKeydown)
   unsubscribeShown = window.electronAPI?.onWindowShown(prepareQuickPick)
   unsubscribeFullscreen = window.electronAPI?.onPreviewFullscreenChanged(value => { fullscreen.value = value })
   searchPanel.value?.focus()
 })
 onBeforeUnmount(() => {
+  document.removeEventListener('keydown', capturePreviewEscape, true)
   document.removeEventListener('keydown', handleKeydown)
   unsubscribeShown?.()
   unsubscribeFullscreen?.()
@@ -176,7 +187,7 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="history-page flex h-full min-h-0 w-full flex-col gap-2.5 px-3.5 pt-2 pb-2.5">
-    <header class="flex shrink-0 items-center gap-2">
+    <header class="flex shrink-0 items-center gap-2 select-none" :class="{ 'window-drag': !previewOpen }">
       <div class="mr-auto flex items-center gap-2"><AppIcon :path="mdiClipboardTextOutline" class="size-6 text-accent" /><h1 class="text-[17px] font-semibold tracking-tight">ClipClip</h1></div>
       <span class="flex items-center gap-1.5 text-xs text-muted" :title="buffer.persistent ? 'История сохраняется с шифрованием' : 'История только в памяти этой сессии'">
         <span class="size-1.5 rounded-full" :class="buffer.paused ? 'bg-amber-500' : 'bg-emerald-600 dark:bg-emerald-400'" />{{ buffer.paused ? 'Пауза' : 'Запись' }}
@@ -184,6 +195,7 @@ onBeforeUnmount(() => {
       <button type="button" class="icon-button" :disabled="buffer.busy || buffer.loading"
         :title="buffer.paused ? 'Продолжить запись' : 'Приостановить запись'" :aria-label="buffer.paused ? 'Продолжить запись' : 'Приостановить запись'"
         @click="buffer.setPaused(!buffer.paused)"><AppIcon :path="buffer.paused ? mdiPlay : mdiPause" /></button>
+      <button type="button" class="hide-window icon-button" aria-label="Скрыть окно" title="Скрыть окно (Esc)" @click="buffer.hide"><AppIcon :path="mdiClose" /></button>
     </header>
 
     <p v-if="!buffer.loading && !buffer.persistent" class="shrink-0 text-xs text-muted">История только в памяти этой сессии</p>
@@ -241,7 +253,7 @@ onBeforeUnmount(() => {
     </footer>
 
     <dialog ref="previewDialog" class="preview-dialog" :class="{ 'is-fullscreen': fullscreen }" aria-labelledby="preview-title" @keydown.stop="handlePreviewKeydown" @cancel.prevent="closePreview">
-      <div class="flex shrink-0 items-center justify-between gap-2"><h2 id="preview-title" class="text-[15px] font-semibold">{{ previewKind === 'image' ? 'Изображение' : 'Полный текст' }}</h2>
+      <div class="flex shrink-0 items-center justify-between gap-2 select-none" :class="{ 'window-drag': !fullscreen }"><h2 id="preview-title" class="text-[15px] font-semibold">{{ previewKind === 'image' ? 'Изображение' : 'Полный текст' }}</h2>
         <div class="flex">
           <button type="button" class="fullscreen-toggle icon-button" :aria-pressed="fullscreen" :disabled="buffer.busy"
             :aria-label="fullscreen ? 'Выйти из полноэкранного режима' : 'На весь экран'" :title="(fullscreen ? 'Выйти из полноэкранного режима' : 'На весь экран') + ' (Ctrl + F)'" @click="togglePreviewFullscreen"><AppIcon :path="fullscreen ? mdiFullscreenExit : mdiFullscreen" /></button>
@@ -265,7 +277,9 @@ onBeforeUnmount(() => {
       </div>
       <div v-else-if="preview" ref="imageViewport" class="preview-content image-viewport h-[min(50dvh,360px)] min-h-0 overflow-auto overscroll-contain rounded-lg bg-canvas" @wheel="imageZoom.wheel">
         <div class="grid min-h-full min-w-full w-max place-items-center">
-          <img :src="preview.data" :alt="'Полное изображение, ' + preview.params.size" :style="imageStyle" class="zoom-image block shrink-0" draggable="false" @load="imageZoom.loaded" />
+          <div class="zoom-canvas relative shrink-0 overflow-hidden" :style="canvasStyle">
+            <img :src="preview.data" :alt="'Полное изображение, ' + preview.params.size" :style="imageStyle" class="zoom-image absolute top-0 left-0 block origin-top-left" draggable="false" @load="imageZoom.loaded" />
+          </div>
         </div>
       </div>
       <p v-else>Запись уже удалена.</p>
