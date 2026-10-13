@@ -170,6 +170,12 @@ async function run() {
     assert.equal(compactPreview.previous.top, compactPreview.fit.top)
     assert.equal(compactPreview.next.top, compactPreview.fit.top)
     assert.ok(compactPreview.previous.right <= compactPreview.zoom.left && compactPreview.fit.right <= compactPreview.next.left)
+    // Changing optional metadata must not shift the controls above it.
+    await evaluate('const metadata = document.querySelector(".preview-metadata"); metadata.style.display = "none"; const title = document.createElement("p"); title.className = "fixture-preview-source shrink-0"; title.textContent = "Synthetic source window"; metadata.after(title)')
+    assert.equal(await evaluate('document.querySelector(".preview-previous").getBoundingClientRect().top'), compactPreview.previous.top)
+    assert.equal(await evaluate('document.querySelector(".preview-next").getBoundingClientRect().top'), compactPreview.next.top)
+    await evaluate('document.querySelector(".fixture-preview-source").remove(); document.querySelector(".preview-metadata").style.display = ""')
+    await delay(150)
     assert.equal(await evaluate('document.querySelector("dialog").textContent.includes("Ctrl + колесо — масштаб")'), false)
     const fitWidth = await evaluate('document.querySelector(".zoom-image").getBoundingClientRect().width')
     const intermediateWidth = await evaluate('document.querySelector(".zoom-in").click(); await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame); return document.querySelector(".zoom-image").getBoundingClientRect().width')
@@ -391,10 +397,24 @@ async function run() {
     assert.equal(await evaluate('document.querySelector(".suggestions .tag-badge").textContent.trim()'), 'Ссылка')
     await screenshot(window, 'link-search.png')
     await evaluate('document.querySelector("input").value=""; document.querySelector("input").dispatchEvent(new Event("input",{bubbles:true}))')
+    nativeTheme.themeSource = 'light'
+    await delay(100)
+    const recordBounds = await evaluate('document.querySelector(".clipboard-record").getBoundingClientRect().toJSON()')
     await evaluate('document.querySelector(".record-select").focus()')
     assert.equal(await evaluate('getComputedStyle(document.querySelector(".record-select")).backgroundColor'), 'rgba(0, 0, 0, 0)')
     assert.notEqual(await evaluate('getComputedStyle(document.querySelector(".clipboard-record")).backgroundColor'), 'rgba(0, 0, 0, 0)')
+    assert.deepEqual(await evaluate('document.querySelector(".clipboard-record").getBoundingClientRect().toJSON()'), recordBounds)
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".clipboard-record")).outlineWidth'), '1px')
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".clipboard-record")).outlineStyle'), 'solid')
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".record-select")).outlineStyle'), 'none')
     await screenshot(window, 'full-card-highlight.png')
+    nativeTheme.themeSource = 'dark'
+    await delay(100)
+    await screenshot(window, 'focused-card-dark.png')
+    nativeTheme.themeSource = 'light'
+    await delay(100)
+    await evaluate('document.querySelector("input").focus()')
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".clipboard-record")).outlineStyle'), 'none')
 
     await evaluate('document.querySelector(".record-select").click()')
     await delay(100)

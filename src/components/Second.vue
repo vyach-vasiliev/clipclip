@@ -337,16 +337,6 @@ onBeforeUnmount(() => {
           <button type="button" class="close-preview icon-button" aria-label="Закрыть просмотр" @click="closePreview"><AppIcon :path="mdiClose" /></button>
         </div>
       </div>
-      <div v-if="preview" class="preview-metadata flex shrink-0 flex-wrap gap-1.5" aria-label="Метки и источник записи">
-        <button v-for="tag in preview.params.tags" :key="JSON.stringify([tag.code, tag.value])" type="button"
-          class="preview-tag group inline-flex min-h-10 min-w-10 max-w-full items-center rounded-lg"
-          :disabled="buffer.busy || saving || filteringPreview || navigatingPreview"
-          :aria-label="'Найти по метке. ' + TAG_LABELS[tag.code] + ': ' + tag.value"
-          :title="'Найти по метке. ' + TAG_LABELS[tag.code] + ': ' + tag.value" @click="searchPreviewTag(tag)">
-          <TagBadge :tag="tag" />
-        </button>
-      </div>
-      <p v-if="preview?.params.source.title" class="shrink-0 truncate text-[11px] text-muted" :title="preview.params.source.title">{{ preview.params.source.title }}</p>
       <div class="preview-toolbar flex h-10 shrink-0 items-center justify-between gap-1" aria-label="Навигация и масштаб">
         <button type="button" class="preview-previous icon-button" :disabled="!canPreviewPrevious" aria-label="Предыдущая запись этого типа" title="Предыдущая запись этого типа (←)" @click="movePreview(-1)"><AppIcon :path="mdiChevronLeft" /></button>
         <div v-if="previewKind === 'image' && preview" class="flex items-center gap-1" aria-label="Масштаб изображения">
@@ -359,6 +349,16 @@ onBeforeUnmount(() => {
         </div>
         <button type="button" class="preview-next icon-button" :disabled="!canPreviewNext" aria-label="Следующая запись этого типа" title="Следующая запись этого типа (→)" @click="movePreview(1)"><AppIcon :path="mdiChevronRight" /></button>
       </div>
+      <div v-if="preview" class="preview-metadata flex shrink-0 flex-wrap gap-1.5" aria-label="Метки и источник записи">
+        <button v-for="tag in preview.params.tags" :key="JSON.stringify([tag.code, tag.value])" type="button"
+          class="preview-tag group inline-flex min-h-10 min-w-10 max-w-full items-center rounded-lg"
+          :disabled="buffer.busy || saving || filteringPreview || navigatingPreview"
+          :aria-label="'Найти по метке. ' + TAG_LABELS[tag.code] + ': ' + tag.value"
+          :title="'Найти по метке. ' + TAG_LABELS[tag.code] + ': ' + tag.value" @click="searchPreviewTag(tag)">
+          <TagBadge :tag="tag" />
+        </button>
+      </div>
+      <p v-if="preview?.params.source.title" class="shrink-0 truncate text-[11px] text-muted" :title="preview.params.source.title">{{ preview.params.source.title }}</p>
       <div v-if="previewKind !== 'image'" class="preview-content min-h-0 overflow-auto text-[13px]">
         <textarea v-if="editing" ref="textArea" v-model="draft" class="text-editor block h-full min-h-0 w-full resize-none rounded-md border border-line bg-canvas p-2.5 font-sans leading-relaxed focus:outline-2 focus:-outline-offset-1 focus:outline-accent" aria-label="Редактирование полного текста" spellcheck="false" />
         <pre v-else class="font-sans whitespace-pre-wrap wrap-anywhere">{{ draft }}</pre>
