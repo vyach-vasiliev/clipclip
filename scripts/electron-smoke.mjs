@@ -9,7 +9,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const profile = await mkdtemp(path.join(tmpdir(), 'clipclip-electron-test-'))
 const output = path.join(root, 'test-results')
 await mkdir(output, { recursive: true })
-const environment = { ...process.env, CLIPCLIP_TEST_MODE: '1', CLIPCLIP_TEST_USER_DATA: profile, CLIPCLIP_TEST_OUTPUT: output }
+const environment = { ...process.env, CLIPCLIP_TEST_MODE: '1', CLIPCLIP_TEST_USER_DATA: profile, CLIPCLIP_TEST_OUTPUT: output,
+  CLIPCLIP_TEST_TRAY: process.platform === 'win32' ? '1' : '0' }
 delete environment.ELECTRON_RUN_AS_NODE
 if (process.env.CLIPCLIP_TEST_DEV_SERVER) environment.VITE_DEV_SERVER_URL = process.env.CLIPCLIP_TEST_DEV_SERVER
 else delete environment.VITE_DEV_SERVER_URL

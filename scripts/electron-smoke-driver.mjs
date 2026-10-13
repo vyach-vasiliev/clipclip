@@ -10,6 +10,13 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 process.on('uncaughtException', error => { console.error(error); app.exit(1) })
 process.on('unhandledRejection', error => { console.error(error); app.exit(1) })
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
+let fixtureTray
+const taskbarStates = new WeakMap()
+app.on('clipclip:test:tray-created', tray => { fixtureTray = tray })
+app.on('browser-window-created', (_event, created) => {
+  const setSkipTaskbar = created.setSkipTaskbar.bind(created)
+  created.setSkipTaskbar = skip => { taskbarStates.set(created, skip); setSkipTaskbar(skip) }
+})
 async function screenshot(window, filename) {
   // A newly recreated/retinted window may not yet have a compositor surface.
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -26,7 +33,11 @@ async function screenshot(window, filename) {
   }
 }
 const renderedWindow = () => new Promise(resolve => {
-  app.once('browser-window-created', (_event, window) => window.webContents.once('did-finish-load', () => resolve(window)))
+  app.once('browser-window-created', (_event, window) => {
+    const loaded = new Promise(done => window.webContents.once('did-finish-load', done))
+    const ready = new Promise(done => window.once('ready-to-show', done))
+    void Promise.all([loaded, ready]).then(() => resolve(window))
+  })
 })
 async function run() {
   process.env.CLIPCLIP_TEST_TEXT = '<img src=x onerror=alert(1)> [ скобка и точка.\n' +
@@ -328,6 +339,46 @@ async function run() {
     window.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point })
     await delay(100)
     assert.equal(window.isVisible(), false)
+    if (process.platform === 'win32') {
+      assert.ok(fixtureTray && !fixtureTray.isDestroyed())
+      assert.equal(taskbarStates.get(window), true)
+      const waitState = async predicate => {
+        for (let attempt = 0; attempt < 60 && !predicate(); attempt++) await delay(50)
+        assert.equal(predicate(), true)
+      }
+      fixtureTray.emit('click')
+      await waitState(() => window.isVisible() && !window.isMinimized())
+      assert.equal(taskbarStates.get(window), false)
+      await delay(50)
+      assert.equal(await evaluate('document.activeElement === document.querySelector("input")'), true)
+      fixtureTray.emit('click')
+      await waitState(() => !window.isVisible())
+      assert.equal(taskbarStates.get(window), true)
+      assert.equal(fixtureTray.isDestroyed(), false)
+      fixtureTray.emit('click')
+      await waitState(() => window.isVisible())
+      window.minimize()
+      await waitState(() => window.isMinimized() && taskbarStates.get(window) === true)
+      fixtureTray.emit('click')
+      await waitState(() => window.isVisible() && !window.isMinimized())
+      assert.equal(taskbarStates.get(window), false)
+      const compactSize = window.getSize()
+      await evaluate('document.querySelector(".preview-button").click()')
+      await delay(50)
+      await evaluate('window.electronAPI.setPreviewFullscreen(true)')
+      fixtureTray.emit('click')
+      await waitState(() => !window.isVisible() && !window.isFullScreen())
+      assert.equal(taskbarStates.get(window), true)
+      assert.deepEqual(window.getSize(), compactSize)
+      fixtureTray.emit('click')
+      await waitState(() => window.isVisible())
+      await delay(100)
+      fixtureTray.emit('click'); fixtureTray.emit('click')
+      await delay(150)
+      assert.equal(window.isVisible(), true)
+      assert.equal(taskbarStates.get(window), false)
+      assert.equal(fixtureTray.isDestroyed(), false)
+    }
     console.log('Electron smoke test passed: isolated clipboard, documents/links, bilingual tags, full-card highlight, IPC, fullscreen, zoom and window controls.')
     app.quit()
   } catch (error) {

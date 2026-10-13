@@ -27,6 +27,8 @@ let persistent = false
 let storageError: string | null = null
 let storage: EncryptedHistoryStorage | null = null
 let revision = 0
+let visibilityGeneration = 0
+let trayTransition: Promise<void> = Promise.resolve()
 let cachedImage: { digest: string; image: NonNullable<ClipboardSnapshot['image']> } | null = null
 let devServer = ''
 const requestedDevServer = !app.isPackaged && process.env.VITE_DEV_SERVER_URL
@@ -182,16 +184,29 @@ function registerIpc() {
     if (typeof value !== 'boolean') throw new Error('Некорректный полноэкранный режим.')
     return setWindowFullscreen(value)
   })
-  handle(CHANNELS.hideWindow, async () => {
-    await setWindowFullscreen(false)
-    if (!tray && !shortcutAvailable && !testMode) win?.minimize()
-    else win?.hide()
-  })
+  handle(CHANNELS.hideWindow, hideWindow)
 }
 
+async function hideWindow() {
+  const window = win
+  if (!window || window.isDestroyed()) return
+  const generation = ++visibilityGeneration
+  await setWindowFullscreen(false)
+  if (generation !== visibilityGeneration || window.isDestroyed() || window !== win) return
+  if (!tray && !shortcutAvailable && !testMode) window.minimize()
+  else window.hide()
+}
+function toggleTrayWindow() {
+  trayTransition = trayTransition.then(async () => {
+    if (win && !win.isDestroyed() && win.isVisible() && !win.isMinimized()) await hideWindow()
+    else showWindow()
+  }).catch(() => { if (!quitting) showWindow() })
+}
 function showWindow() {
+  visibilityGeneration++
   if (!win || win.isDestroyed()) createWindow()
   if (!win) return
+  if (process.platform === 'win32') win.setSkipTaskbar(false)
   if (win.isMinimized()) win.restore()
   win.show()
   win.focus()
@@ -201,10 +216,19 @@ function showWindow() {
 function createWindow() {
   win = new BrowserWindow({
     title: 'ClipClip Manager', width: 460, height: 560, minWidth: 380, minHeight: 420,
-    show: false, icon, autoHideMenuBar: true, frame: process.platform !== 'win32',
+    show: false, icon, autoHideMenuBar: true, frame: process.platform !== 'win32', skipTaskbar: process.platform === 'win32',
     webPreferences: { preload, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
   })
   const created = win
+  const syncTaskbar = () => {
+    if (process.platform === 'win32' && !created.isDestroyed()) {
+      created.setSkipTaskbar((!!tray || testMode) && (!created.isVisible() || created.isMinimized()))
+    }
+  }
+  created.on('show', syncTaskbar)
+  created.on('hide', syncTaskbar)
+  created.on('minimize', syncTaskbar)
+  created.on('restore', syncTaskbar)
   const notifyFullscreen = (fullscreen: boolean) => {
     if (!created.webContents.isDestroyed()) created.webContents.send(CHANNELS.previewFullscreenChanged, fullscreen)
   }
@@ -228,7 +252,7 @@ function createWindow() {
   created.on('close', event => {
     if (!quitting && process.platform !== 'darwin' && tray) {
       event.preventDefault()
-      void setWindowFullscreen(false).catch(() => {}).finally(() => { if (!created.isDestroyed()) created.hide() })
+      void hideWindow().catch(() => {})
     }
   })
   created.on('closed', () => {
@@ -283,13 +307,14 @@ async function initialize() {
     })
   })
   registerIpc()
-  if (!testMode) {
+  if (!testMode || process.env.CLIPCLIP_TEST_TRAY === '1') {
     const trayImage = nativeImage.createFromPath(icon)
     if (!trayImage.isEmpty()) try {
       tray = new Tray(trayImage.resize({ width: 20, height: 20 }))
       tray.setToolTip('ClipClip — Ctrl + Alt + B')
-      tray.on('click', showWindow)
+      tray.on('click', toggleTrayWindow)
       updateTray()
+      if (testMode) app.emit('clipclip:test:tray-created', tray)
     } catch { tray = null }
   }
   shortcutAvailable = !testMode && process.platform !== 'win32' && globalShortcut.register('Ctrl+Alt+B', showWindow)
