@@ -49,6 +49,40 @@ beforeEach(() => {
 afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); document.body.innerHTML = ''; delete window.electronAPI; vi.unstubAllGlobals() })
 
 describe('search and navigation', () => {
+  it.each([['document', 'Документ', '#doc'], ['link', 'Ссылка', '#url']] as const)('searches, previews and copies %s records through English badges', async (kind, label, query) => {
+    const record = item('special', kind === 'link' ? 'https://example.test' : 'document paragraph')
+    record.type = record.params.type = kind
+    record.params.tags = [{ code: 'type', value: label }]
+    const { wrapper, api } = await setup([record, item('plain')])
+    await wrapper.get('input').setValue(query)
+    expect(wrapper.findAll('.record-select')).toHaveLength(1)
+    expect(wrapper.get('.suggestions .tag-badge').text()).toBe(label)
+    await wrapper.get('.suggestions .tag-badge').trigger('click')
+    await wrapper.get('.preview-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.preview-content pre').text()).toBe(record.data)
+    await wrapper.get('dialog .primary-button').trigger('click')
+    await flushPromises()
+    expect(api.copyItem).toHaveBeenCalledWith('special')
+    expect(api.hideWindow).toHaveBeenCalledTimes(1)
+  })
+  it('shows file names in cards and complete paths in a read-only document preview', async () => {
+    const record = item('files', 'C:/Docs/report.pdf\nC:/Docs/table.xlsx')
+    record.type = record.params.type = 'document'
+    record.fileUris = ['file:///C:/Docs/report.pdf', 'file:///C:/Docs/table.xlsx']
+    record.params.tags = [{ code: 'type', value: 'Документ' }]
+    const { wrapper, api } = await setup([record])
+    expect(wrapper.get('.text-preview').text()).toContain('report.pdf')
+    expect(wrapper.get('.text-preview').text()).not.toContain('C:/Docs')
+    await wrapper.get('.preview-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.preview-content pre').text()).toContain('C:/Docs/report.pdf')
+    expect(wrapper.find('.edit-toggle').exists()).toBe(false)
+    await wrapper.get('dialog .primary-button').trigger('click')
+    await flushPromises()
+    expect(api.copyItem).toHaveBeenCalledWith('files')
+    expect(api.saveTextRevision).not.toHaveBeenCalled()
+  })
   it.each(['[', '.', '(', '\\', '<img>', '🙂'])('highlights literal %s without interpreting markup or regex', query => {
     const text = 'before ' + query + ' after'
     const parts = highlightParts(text, query)

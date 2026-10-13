@@ -14,6 +14,62 @@ function setup(snapshot: ClipboardSnapshot = { text: 'hello', image: null }) {
 afterEach(() => { active.splice(0).forEach(history => history.dispose()); vi.useRealTimers() })
 
 describe('clipboard history', () => {
+  it('captures links and text from document sources with the right type and keeps versions editable', async () => {
+    const { history, setSnapshot } = setup({ text: 'https://example.test', image: null })
+    await history.capture()
+    expect(history.items[0].type).toBe('link')
+    const revision = history.saveTextRevision(history.items[0].id, 'ordinary text')
+    expect(revision.type).toBe('text')
+    setSnapshot({ text: 'C:\\Docs\\report.pdf', image: null })
+    await history.capture()
+    expect(history.items[0].params.tags).toContainEqual({ code: 'type', value: 'Документ' })
+  })
+  it('captures copied files separately, preserves metadata on reload, and prevents editing file paths', async () => {
+    const fileUris = ['file:///C:/Docs/report.pdf', 'file:///C:/Docs/table.xlsx']
+    const { history, setSnapshot } = setup({ text: 'file text representation', image, fileUris })
+    await history.capture()
+    expect(history.items).toHaveLength(1)
+    expect(history.items[0].type).toBe('document')
+    expect(history.items[0].fileUris).toEqual(fileUris)
+    expect(history.items[0].data).toContain('C:/Docs/report.pdf')
+    expect(() => history.saveTextRevision(history.items[0].id, 'edited path')).toThrow()
+    history.hydrate(history.items)
+    expect(history.items[0].fileUris).toEqual(fileUris)
+    history.acknowledgeClipboard({ text: '', image: null, fileUris })
+    setSnapshot({ text: '', image: null, fileUris }); await history.capture()
+    expect(history.items).toHaveLength(1)
+  })
+  it('reclassifies existing text without losing its id or source', async () => {
+    const { history } = setup()
+    await history.capture()
+    const old = history.items[0]
+    history.hydrate([{ ...old, data: 'https://example.test' }])
+    expect(history.items[0].id).toBe(old.id)
+    expect(history.items[0].type).toBe('link')
+    expect(history.items[0].params.tags).toContainEqual({ code: 'type', value: 'Ссылка' })
+  })
+  it('keeps document attribution on restart when source lookup fails and deduplicates semantic types', async () => {
+    let owner = { name: 'Microsoft Word', title: '' }
+    let text = 'document paragraph'
+    const history = new ClipboardHistory({ read: () => ({ text, image: null }), source: async () => {
+      if (!owner.name) throw new Error('unavailable')
+      return owner
+    } })
+    active.push(history)
+    await history.capture()
+    const original = history.items[0]
+    const restored = new ClipboardHistory({ read: () => ({ text, image: null }), source: async () => { throw new Error('unavailable') } })
+    active.push(restored)
+    restored.hydrate(history.items); await restored.capture()
+    expect(restored.items).toHaveLength(1)
+    expect(restored.items[0].type).toBe('document')
+    expect(restored.items[0].params.source.name).toBe('Microsoft Word')
+    text = 'other'; await history.capture()
+    owner = { name: 'Browser', title: '' }; text = 'document paragraph'; await history.capture()
+    expect(history.items.filter(item => item.data === text)).toHaveLength(1)
+    expect(history.items[0].id).toBe(original.id)
+    expect(history.items[0].type).toBe('text')
+  })
   it('preserves earlier text versions and resets without erasing edits', async () => {
     const { history } = setup()
     await history.capture()

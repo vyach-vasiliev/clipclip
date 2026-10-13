@@ -1,5 +1,6 @@
 import type { ClipboardHistoryItem, ClipboardTag } from '../../shared/clipboard'
-import { tagKey, TAG_LABELS } from '../../shared/clipboard'
+import { tagKey } from '../../shared/clipboard'
+import { matchesTag } from '../../shared/content'
 
 export interface HighlightPart { text: string; matched: boolean }
 
@@ -31,9 +32,8 @@ export function filterHistory(items: ClipboardHistoryItem[], query: string, tags
   query = query.trim().toLocaleLowerCase()
   return items.filter(item => {
     const tagQuery = query.startsWith('#') ? query.slice(1) : query
-    const matchesTag = item.params.tags.some(tag => tag.value.toLocaleLowerCase().includes(tagQuery)
-      || (query.startsWith('#') && (tag.code.includes(tagQuery) || TAG_LABELS[tag.code].toLocaleLowerCase().includes(tagQuery))))
-    const matchesQuery = !query || (!query.startsWith('#') && item.type === 'text' && item.data.toLocaleLowerCase().includes(query)) || matchesTag
+    const tagged = item.params.tags.some(tag => matchesTag(tag, tagQuery, query.startsWith('#')))
+    const matchesQuery = !query || (!query.startsWith('#') && item.type !== 'image' && item.data.toLocaleLowerCase().includes(query)) || tagged
     return matchesQuery && tags.every(selected => item.params.tags.some(tag => tagKey(tag) === tagKey(selected)))
   })
 }

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, nativeImage, nativeTheme, safeStorage } from 'electron'
+import { app, BrowserWindow, ClipboardItem, nativeImage, nativeTheme, safeStorage } from 'electron'
 import assert from 'node:assert/strict'
 import { writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
@@ -122,6 +122,11 @@ async function run() {
       assert.ok(dimensions.close.right <= dimensions.width + 1 && dimensions.close.top >= 0, JSON.stringify(dimensions))
     }
     const imageId = await evaluate('(await window.electronAPI.getHistory()).items.find(item => item.type === "image").id')
+    await evaluate('document.querySelector("input").value="#pic"; document.querySelector("input").dispatchEvent(new Event("input",{bubbles:true}))')
+    await delay(50)
+    assert.equal(await evaluate('document.querySelectorAll(".record-select").length'), 1)
+    assert.equal(await evaluate('document.querySelector(".suggestions .tag-badge").textContent.trim()'), 'Изображение')
+    await evaluate('document.querySelector("input").value=""; document.querySelector("input").dispatchEvent(new Event("input",{bubbles:true}))')
     window.show()
     window.focus()
     await evaluate('document.getElementById(' + JSON.stringify('record-' + imageId) + ').closest("article").querySelector(".preview-button").click()')
@@ -244,6 +249,45 @@ async function run() {
     assert.equal(await evaluate('document.querySelector(".history-list").scrollTop'), 0)
     assert.equal(await evaluate('document.activeElement === document.querySelector("input")'), true)
 
+    // Document fixtures never read file contents or change the system clipboard.
+    const waitRecord = async predicate => {
+      for (let attempt = 0; attempt < 30; attempt++) {
+        if (await evaluate('(await window.electronAPI.getHistory()).items.some(' + predicate + ')')) return
+        await delay(100)
+      }
+      throw new Error('Synthetic classified record was not captured')
+    }
+    process.env.CLIPCLIP_TEST_SOURCE = 'Microsoft Word'
+    process.env.CLIPCLIP_TEST_TEXT = 'Synthetic document paragraph'
+    delete process.env.CLIPCLIP_TEST_IMAGE
+    await waitRecord('item => item.type === "document" && item.data === "Synthetic document paragraph"')
+    const fileUris = ['file:///C:/Fixture/Report%20one.pdf', 'file:///C:/Fixture/Table.xlsx']
+    const payload = new ClipboardItem({ 'text/uri-list': new Blob([fileUris.join('\r\n')], { type: 'text/uri-list' }) })
+    assert.equal(await (await payload.getType('text/uri-list')).text(), fileUris.join('\r\n'))
+    process.env.CLIPCLIP_TEST_FILES = JSON.stringify(fileUris)
+    process.env.CLIPCLIP_TEST_TEXT = ''
+    await waitRecord('item => item.type === "document" && item.fileUris?.length === 2')
+    app.emit('activate'); await delay(100)
+    await evaluate('document.querySelector(".preview-button").click()')
+    await delay(100)
+    assert.equal(await evaluate('document.querySelector(".edit-toggle") === null'), true)
+    assert.equal(await evaluate('document.querySelector(".preview-content pre").textContent.includes("Report one.pdf")'), true)
+    await screenshot(window, 'document-preview.png')
+    await evaluate('document.querySelector(".close-preview").click()')
+    delete process.env.CLIPCLIP_TEST_FILES
+    process.env.CLIPCLIP_TEST_TEXT = 'https://example.test/clipboard'
+    await waitRecord('item => item.type === "link" && item.data === "https://example.test/clipboard"')
+    await evaluate('document.querySelector("input").value="#url"; document.querySelector("input").dispatchEvent(new Event("input",{bubbles:true}))')
+    await delay(100)
+    assert.equal(await evaluate('document.querySelectorAll(".record-select").length'), 1)
+    assert.equal(await evaluate('document.querySelector(".suggestions .tag-badge").textContent.trim()'), 'Ссылка')
+    await screenshot(window, 'link-search.png')
+    await evaluate('document.querySelector("input").value=""; document.querySelector("input").dispatchEvent(new Event("input",{bubbles:true}))')
+    await evaluate('document.querySelector(".record-select").focus()')
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".record-select")).backgroundColor'), 'rgba(0, 0, 0, 0)')
+    assert.notEqual(await evaluate('getComputedStyle(document.querySelector(".clipboard-record")).backgroundColor'), 'rgba(0, 0, 0, 0)')
+    await screenshot(window, 'full-card-highlight.png')
+
     await evaluate('document.querySelector(".record-select").click()')
     await delay(100)
     assert.equal(window.isVisible(), false)
@@ -255,7 +299,7 @@ async function run() {
     window.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point })
     await delay(100)
     assert.equal(window.isVisible(), false)
-    console.log('Electron smoke test passed: isolated clipboard, IPC, search, keyboard, fullscreen Escape, smooth image zoom, frameless controls and compact layout.')
+    console.log('Electron smoke test passed: isolated clipboard, documents/links, bilingual tags, full-card highlight, IPC, fullscreen, zoom and window controls.')
     app.quit()
   } catch (error) {
     console.error(error)

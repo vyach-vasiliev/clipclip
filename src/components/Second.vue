@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck, mdiFullscreen, mdiFullscreenExit, mdiMagnifyPlusOutline, mdiMagnifyMinusOutline, mdiFitToScreenOutline } from '@mdi/js'
-import { HISTORY_LIMIT, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
+import { HISTORY_LIMIT, KIND_LABELS, type ClipboardKind, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
 import { useBufferStore } from '../store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags, isEditingTarget, isActionTarget } from '../utils/history'
 import SearchPanel from './SearchPanel.vue'
@@ -22,7 +22,8 @@ const preview = computed(() => buffer.clipboardHistory.find(item => item.id === 
 const editor = useTextEditor(buffer.saveRevision)
 const { draft, editing, saving, saveError, originalText, savedText } = editor
 const textArea = ref<HTMLTextAreaElement>()
-const previewKind = ref<'text' | 'image'>('text')
+const previewKind = ref<ClipboardKind>('text')
+const previewIsText = computed(() => previewKind.value !== 'image' && !preview.value?.fileUris)
 const previewOpen = ref(false)
 const fullscreen = ref(false)
 const imageZoom = useImageZoom()
@@ -34,7 +35,7 @@ const allTags = computed(() => historyTags(buffer.clipboardHistory))
 const filtered = computed(() => filterHistory(buffer.clipboardHistory, search.value, selectedTags.value))
 const selected = computed(() => filtered.value.find(item => item.id === selectedId.value))
 function recordLabel(item: ClipboardHistoryItem) {
-  return item.type === 'text' ? 'Текст: ' + (item.data.trim() ? item.data.slice(0, 160).replace(/\s+/g, ' ') : 'Пробелы и переносы строк')
+  return item.type !== 'image' ? KIND_LABELS[item.type] + ': ' + (item.data.trim() ? shortText(item).slice(0, 160).replace(/\s+/g, ' ') : 'Пробелы и переносы строк')
     : 'Изображение, ' + item.params.size
 }
 
@@ -98,7 +99,7 @@ async function toggleEditing() {
   if (editing.value) { await nextTick(); textArea.value?.focus() }
 }
 async function copyPreview() {
-  if (previewKind.value === 'text') {
+  if (previewIsText.value) {
     if (!await editor.flush()) return
     if (editor.currentId.value) await copyById(editor.currentId.value, true)
   } else await copy(preview.value, true)
@@ -167,7 +168,9 @@ function handleKeydown(event: KeyboardEvent) {
     searchPanel.value?.focus()
   }
 }
-function shortText(item: ClipboardHistoryItem) { return item.data.slice(0, 1200) }
+function shortText(item: ClipboardHistoryItem) {
+  return (item.fileUris ? item.data.split('\n').map(file => file.split(/[\\/]/).at(-1)).join('\n') : item.data).slice(0, 1200)
+}
 
 onMounted(() => {
   document.addEventListener('keydown', capturePreviewEscape, true)
@@ -220,12 +223,12 @@ onBeforeUnmount(() => {
 
       <ul v-else class="history-list -mx-0.5 flex min-h-0 flex-col gap-2 overflow-y-auto p-0.5">
         <li v-for="item in filtered" :key="item.id">
-          <article class="clipboard-record flex items-center overflow-hidden rounded-lg"
+          <article class="clipboard-record flex items-center overflow-hidden rounded-lg hover:bg-accent/4 focus-within:bg-accent/10"
             :class="item.id === selectedId ? 'selected bg-selected' : 'bg-surface'">
-            <button :id="'record-' + item.id" type="button" class="record-select block min-h-[78px] min-w-0 flex-1 rounded-md px-3 py-2.5 text-left hover:bg-accent/4 focus-visible:bg-accent/10 focus-visible:outline-none disabled:cursor-wait"
+            <button :id="'record-' + item.id" type="button" class="record-select block min-h-[78px] min-w-0 flex-1 rounded-md px-3 py-2.5 text-left focus-visible:outline-none disabled:cursor-wait"
               :aria-pressed="item.id === selectedId" :aria-label="'Скопировать и скрыть. ' + recordLabel(item) + ', ' + item.params.source.name" title="Скопировать и скрыть"
               :disabled="buffer.busy" :tabindex="item.id === selectedId ? 0 : -1" @focus="select(item)" @click="select(item); copy(item, true)">
-              <p v-if="item.type === 'text'" class="text-preview line-clamp-2 text-[13px] leading-snug whitespace-pre-wrap wrap-anywhere">
+              <p v-if="item.type !== 'image'" class="text-preview line-clamp-2 text-[13px] leading-snug whitespace-pre-wrap wrap-anywhere">
                 <span v-if="!item.data.trim()" class="text-muted">Пробелы и переносы строк</span>
                 <template v-else v-for="(part, index) in highlightParts(shortText(item), search)" :key="index">
                   <mark v-if="part.matched" class="query-mark rounded-xs bg-accent/18 px-px text-inherit">{{ part.text }}</mark><span v-else>{{ part.text }}</span>
@@ -253,11 +256,11 @@ onBeforeUnmount(() => {
     </footer>
 
     <dialog ref="previewDialog" class="preview-dialog" :class="{ 'is-fullscreen': fullscreen }" aria-labelledby="preview-title" @keydown.stop="handlePreviewKeydown" @cancel.prevent="closePreview">
-      <div class="flex shrink-0 items-center justify-between gap-2 select-none" :class="{ 'window-drag': !fullscreen }"><h2 id="preview-title" class="text-[15px] font-semibold">{{ previewKind === 'image' ? 'Изображение' : 'Полный текст' }}</h2>
+      <div class="flex shrink-0 items-center justify-between gap-2 select-none" :class="{ 'window-drag': !fullscreen }"><h2 id="preview-title" class="text-[15px] font-semibold">{{ previewKind === 'text' ? 'Полный текст' : KIND_LABELS[previewKind] }}</h2>
         <div class="flex">
           <button type="button" class="fullscreen-toggle icon-button" :aria-pressed="fullscreen" :disabled="buffer.busy"
             :aria-label="fullscreen ? 'Выйти из полноэкранного режима' : 'На весь экран'" :title="(fullscreen ? 'Выйти из полноэкранного режима' : 'На весь экран') + ' (Ctrl + F)'" @click="togglePreviewFullscreen"><AppIcon :path="fullscreen ? mdiFullscreenExit : mdiFullscreen" /></button>
-          <button v-if="previewKind === 'text'" type="button" class="edit-toggle icon-button" :aria-pressed="editing"
+          <button v-if="previewIsText" type="button" class="edit-toggle icon-button" :aria-pressed="editing"
             :aria-label="editing ? 'Завершить редактирование' : 'Редактировать текст'" :title="editing ? 'Завершить редактирование' : 'Редактировать текст'" @click="toggleEditing"><AppIcon :path="editing ? mdiCheck : mdiPencilOutline" /></button>
           <button v-if="editing" type="button" class="reset-edit icon-button" :disabled="draft === originalText && draft === savedText"
             aria-label="Сбросить к исходному тексту" title="Сбросить к исходному тексту" @click="editor.reset"><AppIcon :path="mdiRestore" /></button>
@@ -270,10 +273,10 @@ onBeforeUnmount(() => {
         <button type="button" class="zoom-in icon-button" aria-label="Увеличить изображение" title="Увеличить" :disabled="!imageNatural.width || imageScale >= 8" @click="imageZoom.zoom(1)"><AppIcon :path="mdiMagnifyPlusOutline" /></button>
         <button type="button" class="zoom-fit text-button" :disabled="!imageNatural.width" title="Вписать изображение в область просмотра" @click="imageZoom.fitImage"><AppIcon :path="mdiFitToScreenOutline" class="size-4" />Вписать</button>
       </div>
-      <div v-if="previewKind === 'text'" class="preview-content min-h-0 overflow-auto text-[13px]">
+      <div v-if="previewKind !== 'image'" class="preview-content min-h-0 overflow-auto text-[13px]">
         <textarea v-if="editing" ref="textArea" v-model="draft" class="text-editor block w-full rounded-md border border-line bg-canvas p-2.5 font-sans leading-relaxed focus:outline-2 focus:-outline-offset-1 focus:outline-accent"
           :class="fullscreen ? 'h-full min-h-0 max-h-none resize-none' : 'max-h-[45dvh] min-h-[180px] resize-y'" aria-label="Редактирование полного текста" spellcheck="false" />
-        <pre v-else-if="previewKind === 'text'" class="font-sans whitespace-pre-wrap wrap-anywhere">{{ draft }}</pre>
+        <pre v-else class="font-sans whitespace-pre-wrap wrap-anywhere">{{ draft }}</pre>
       </div>
       <div v-else-if="preview" ref="imageViewport" class="preview-content image-viewport h-[min(50dvh,360px)] min-h-0 overflow-auto overscroll-contain rounded-lg bg-canvas" @wheel="imageZoom.wheel">
         <div class="grid min-h-full min-w-full w-max place-items-center">
@@ -287,7 +290,7 @@ onBeforeUnmount(() => {
       <p v-if="saveError" class="text-xs text-danger" role="alert">{{ saveError }}</p>
       <p v-else-if="buffer.error" class="text-xs text-danger" role="alert">{{ buffer.error }}</p>
       <p v-else-if="editing" class="text-[11px] text-muted" role="status">{{ saving ? 'Сохраняется…' : draft !== savedText ? 'Есть изменения…' : 'Версии сохраняются в истории' }}</p>
-      <button v-if="previewKind === 'text' || preview" type="button" class="primary-button" :aria-busy="saving || copyingId !== null" :disabled="buffer.busy || saving" @click="copyPreview">
+      <button v-if="previewKind !== 'image' || preview" type="button" class="primary-button" :aria-busy="saving || copyingId !== null" :disabled="buffer.busy || saving" @click="copyPreview">
         <AppIcon :path="mdiContentCopy" />{{ saving ? 'Сохраняется…' : copyingId !== null ? 'Копируется…' : 'Копировать и скрыть' }}
       </button>
     </dialog>

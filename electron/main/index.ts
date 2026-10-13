@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, ClipboardItem, globalShortcut, ipcMain, 
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { CHANNELS, MAX_ITEM_BYTES, UNKNOWN_SOURCE, type ClipboardSnapshot, type HistoryState } from '../../shared/clipboard'
+import { CHANNELS, MAX_ITEM_BYTES, UNKNOWN_SOURCE, isFileUriList, type ClipboardSnapshot, type HistoryState } from '../../shared/clipboard'
 import { ClipboardHistory, ClipboardMonitor } from './history'
 import { EncryptedHistoryStorage } from './storage'
 import { assetPath, isTrustedPage, requireId, requireTextRevision } from './security'
@@ -44,7 +44,8 @@ async function readSnapshot(): Promise<ClipboardSnapshot> {
   if (testMode) {
     const fixture = process.env.CLIPCLIP_TEST_IMAGE ? nativeImage.createFromDataURL(process.env.CLIPCLIP_TEST_IMAGE) : null
     return { text: process.env.CLIPCLIP_TEST_TEXT ?? 'Проверка поиска: [ скобка, точка.\nВторая строка',
-      image: fixture && !fixture.isEmpty() ? { data: fixture.toDataURL(), ...fixture.getSize() } : null }
+      image: fixture && !fixture.isEmpty() ? { data: fixture.toDataURL(), ...fixture.getSize() } : null,
+      fileUris: process.env.CLIPCLIP_TEST_FILES ? JSON.parse(process.env.CLIPCLIP_TEST_FILES) : undefined }
   }
   const items = await clipboard.read()
   const textItem = items.find(item => item.types.includes('text/plain'))
@@ -52,25 +53,36 @@ async function readSnapshot(): Promise<ClipboardSnapshot> {
   let warning: string | undefined
   if (textBlob && textBlob.size > MAX_ITEM_BYTES) warning = 'Текст больше 8 МБ пропущен.'
   const text = textBlob && !warning ? await textBlob.text() : ''
+  const fileItem = items.find(item => item.types.includes('text/uri-list'))
+  let fileUris: string[] | undefined
+  if (fileItem) {
+    const blob = await fileItem.getType('text/uri-list')
+    if (blob.size > MAX_ITEM_BYTES) warning = 'Список файлов больше 8 МБ пропущен.'
+    else {
+      const uris = (await blob.text()).split(/\r?\n/).map(uri => uri.trim()).filter(uri => uri && !uri.startsWith('#'))
+      if (isFileUriList(uris)) fileUris = uris.map(uri => new URL(uri).href)
+      else warning = 'Список файлов не удалось прочитать.'
+    }
+  }
   const imageItem = items.find(item => item.types.includes('image/png') || item.types.includes('image/jpeg'))
-  if (!imageItem) { cachedImage = null; return { text, image: null, warning } }
+  if (!imageItem) { cachedImage = null; return { text, image: null, fileUris, warning } }
   const blob = await imageItem.getType(imageItem.types.includes('image/png') ? 'image/png' : 'image/jpeg')
-  if (blob.size > MAX_ITEM_BYTES) return { text, image: null, warning: 'Изображение больше 8 МБ пропущено.' }
+  if (blob.size > MAX_ITEM_BYTES) return { text, image: null, fileUris, warning: 'Изображение больше 8 МБ пропущено.' }
   const bytes = Buffer.from(await blob.arrayBuffer())
   const digest = createHash('sha256').update(bytes).digest('hex')
-  if (cachedImage?.digest === digest) return { text, image: cachedImage.image, warning }
+  if (cachedImage?.digest === digest) return { text, image: cachedImage.image, fileUris, warning }
   const image = nativeImage.createFromBuffer(bytes)
-  if (image.isEmpty()) return { text, image: null, warning: 'Изображение не удалось прочитать.' }
+  if (image.isEmpty()) return { text, image: null, fileUris, warning: 'Изображение не удалось прочитать.' }
   const { width, height } = image.getSize()
-  if (width * height > 16_000_000) return { text, image: null, warning: 'Изображение больше 16 мегапикселей пропущено.' }
+  if (width * height > 16_000_000) return { text, image: null, fileUris, warning: 'Изображение больше 16 мегапикселей пропущено.' }
   const data = image.toDataURL()
-  if (Buffer.byteLength(data, 'utf8') > MAX_ITEM_BYTES) return { text, image: null, warning: 'Изображение больше 8 МБ пропущено.' }
+  if (Buffer.byteLength(data, 'utf8') > MAX_ITEM_BYTES) return { text, image: null, fileUris, warning: 'Изображение больше 8 МБ пропущено.' }
   cachedImage = { digest, image: { data, width, height } }
-  return { text, image: cachedImage.image, warning }
+  return { text, image: cachedImage.image, fileUris, warning }
 }
 
 async function getSource() {
-  if (testMode) return { name: 'Тест: приложение', title: '' }
+  if (testMode) return { name: process.env.CLIPCLIP_TEST_SOURCE ?? 'Тест: приложение', title: '' }
   let timeout: ReturnType<typeof setTimeout> | undefined
   try {
     const source = await Promise.race([
@@ -145,14 +157,15 @@ function registerIpc() {
     const item = history.items.find(candidate => candidate.id === id)
     if (!item) throw new Error('Запись уже удалена.')
     if (!testMode) {
-      if (item.type === 'text') await clipboard.writeText(item.data)
+      if (item.fileUris) await clipboard.write([new ClipboardItem({ 'text/uri-list': new Blob([item.fileUris.join('\r\n')], { type: 'text/uri-list' }) })])
+      else if (item.type !== 'image') await clipboard.writeText(item.data)
       else {
         const image = nativeImage.createFromDataURL(item.data)
         if (image.isEmpty()) throw new Error('Не удалось открыть изображение.')
         await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(image.toPNG())], { type: 'image/png' }) })])
       }
     }
-    history.acknowledgeClipboard({ text: item.type === 'text' ? item.data : '',
+    history.acknowledgeClipboard({ text: item.type !== 'image' && !item.fileUris ? item.data : '', fileUris: item.fileUris,
       image: item.type === 'image' ? { data: item.data, width: 1, height: 1 } : null })
   })
   handle(CHANNELS.deleteItem, value => history.delete(requireId(value)))

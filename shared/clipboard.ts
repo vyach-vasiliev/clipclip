@@ -1,4 +1,4 @@
-export type ClipboardKind = 'text' | 'image'
+export type ClipboardKind = 'text' | 'image' | 'document' | 'link'
 
 export interface ClipboardTag {
   code: 'size' | 'type' | 'source'
@@ -14,6 +14,7 @@ export interface ClipboardHistoryItem {
   id: string
   type: ClipboardKind
   data: string
+  fileUris?: string[]
   createdAt: number
   params: {
     size: string
@@ -32,6 +33,7 @@ export interface ClipboardImage {
 export interface ClipboardSnapshot {
   text: string
   image: ClipboardImage | null
+  fileUris?: string[]
   warning?: string
 }
 
@@ -79,6 +81,16 @@ export const MAX_HISTORY_BYTES = 32 * 1024 * 1024
 
 export const UNKNOWN_SOURCE: ClipboardSource = { name: 'Неизвестно', title: '' }
 export const TAG_LABELS = { size: 'Размер', type: 'Тип', source: 'Источник' } as const
+export const KIND_LABELS = { text: 'Текст', image: 'Изображение', document: 'Документ', link: 'Ссылка' } as const
+
+export function isFileUriList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length > 0 && value.length <= 100
+    && value.every(uri => {
+      if (typeof uri !== 'string' || uri.length > 32768 || /[\r\n\0]/.test(uri)) return false
+      try { const url = new URL(uri); return url.protocol === 'file:' && !!url.pathname && !/[\r\n\0]/.test(decodeURIComponent(url.pathname)) && !url.username && !url.password && !url.search && !url.hash }
+      catch { return false }
+    })
+}
 
 export function tagKey(tag: ClipboardTag): string {
   return JSON.stringify([tag.code, tag.value])
@@ -88,9 +100,10 @@ export function isHistoryItem(value: unknown): value is ClipboardHistoryItem {
   if (!value || typeof value !== 'object') return false
   const item = value as ClipboardHistoryItem
   return typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 100
-    && (item.type === 'text' || item.type === 'image')
+    && ['text', 'image', 'document', 'link'].includes(item.type)
     && typeof item.data === 'string' && item.data.length <= MAX_ITEM_BYTES
     && (item.type !== 'image' || /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(item.data))
+    && (item.fileUris === undefined || (item.type === 'document' && isFileUriList(item.fileUris)))
     && Number.isFinite(item.createdAt) && !!item.params
     && typeof item.params.size === 'string' && item.params.size.length <= 100
     && item.params.type === item.type && !!item.params.source
