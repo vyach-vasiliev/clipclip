@@ -220,9 +220,9 @@ onBeforeUnmount(() => {
 
       <ul v-else class="history-list -mx-0.5 flex min-h-0 flex-col gap-2 overflow-y-auto p-0.5">
         <li v-for="item in filtered" :key="item.id">
-          <article class="clipboard-record flex items-center overflow-hidden rounded-lg ring-1"
-            :class="item.id === selectedId ? 'selected bg-selected ring-2 ring-accent' : 'bg-surface ring-line'">
-            <button :id="'record-' + item.id" type="button" class="record-select block min-h-[78px] min-w-0 flex-1 rounded-md px-3 py-2.5 text-left hover:bg-accent/4 disabled:cursor-wait"
+          <article class="clipboard-record flex items-center overflow-hidden rounded-lg"
+            :class="item.id === selectedId ? 'selected bg-selected' : 'bg-surface'">
+            <button :id="'record-' + item.id" type="button" class="record-select block min-h-[78px] min-w-0 flex-1 rounded-md px-3 py-2.5 text-left hover:bg-accent/4 focus-visible:bg-accent/10 focus-visible:outline-none disabled:cursor-wait"
               :aria-pressed="item.id === selectedId" :aria-label="'Скопировать и скрыть. ' + recordLabel(item) + ', ' + item.params.source.name" title="Скопировать и скрыть"
               :disabled="buffer.busy" :tabindex="item.id === selectedId ? 0 : -1" @focus="select(item)" @click="select(item); copy(item, true)">
               <p v-if="item.type === 'text'" class="text-preview line-clamp-2 text-[13px] leading-snug whitespace-pre-wrap wrap-anywhere">
