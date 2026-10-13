@@ -196,6 +196,11 @@ async function run() {
     await evaluate('document.getElementById(' + JSON.stringify('record-' + imageId) + ').closest("article").querySelector(".preview-button").click()')
     await delay(100)
     assert.equal(await evaluate('document.querySelector(".zoom-in").disabled'), false)
+    nativeTheme.themeSource = 'dark'
+    await delay(100)
+    await screenshot(window, 'image-zoom-dark.png')
+    nativeTheme.themeSource = 'light'
+    await delay(100)
     await screenshot(window, 'image-zoom.png')
     await evaluate('document.querySelector(".close-preview").click()')
     await delay(50)

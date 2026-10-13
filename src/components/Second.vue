@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck, mdiFullscreen, mdiFullscreenExit, mdiMagnifyPlusOutline, mdiMagnifyMinusOutline, mdiFitToScreenOutline, mdiChevronLeft, mdiChevronRight } from '@mdi/js'
+import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck, mdiFullscreen, mdiFullscreenExit, mdiPlus, mdiMinus, mdiFitToScreenOutline, mdiChevronLeft, mdiChevronRight } from '@mdi/js'
 import { HISTORY_LIMIT, KIND_LABELS, type ClipboardKind, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
 import { useBufferStore } from '../store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags, isEditingTarget, isActionTarget } from '../utils/history'
@@ -330,11 +330,13 @@ onBeforeUnmount(() => {
         <TagBadge v-for="tag in preview.params.tags" :key="JSON.stringify([tag.code, tag.value])" :tag="tag" />
       </div>
       <p v-if="preview?.params.source.title" class="shrink-0 truncate text-[11px] text-muted" :title="preview.params.source.title">{{ preview.params.source.title }}</p>
-      <div v-if="previewKind === 'image' && preview" class="flex shrink-0 items-center justify-center gap-1" aria-label="Масштаб изображения">
-        <button type="button" class="zoom-out icon-button" aria-label="Уменьшить изображение" title="Уменьшить" :disabled="!imageNatural.width || imageScale <= .01" @click="imageZoom.zoom(-1)"><AppIcon :path="mdiMagnifyMinusOutline" /></button>
-        <button type="button" class="zoom-percent text-button min-w-16 tabular-nums" aria-label="Масштаб 100 процентов" title="Исходный размер — 100%" :disabled="!imageNatural.width" @click="imageZoom.setScale(1)">{{ imagePercent }}%</button>
-        <button type="button" class="zoom-in icon-button" aria-label="Увеличить изображение" title="Увеличить" :disabled="!imageNatural.width || imageScale >= 8" @click="imageZoom.zoom(1)"><AppIcon :path="mdiMagnifyPlusOutline" /></button>
-        <button type="button" class="zoom-fit text-button" :disabled="!imageNatural.width" title="Вписать изображение в область просмотра" @click="imageZoom.fitImage"><AppIcon :path="mdiFitToScreenOutline" class="size-4" />Вписать</button>
+      <div v-if="previewKind === 'image' && preview" class="flex shrink-0 items-center justify-center gap-2" aria-label="Масштаб изображения">
+        <div class="zoom-controls flex h-12 w-[196px] items-center gap-1 rounded-full bg-ink/8 p-1 shadow-sm dark:bg-neutral-800">
+          <button type="button" class="zoom-out zoom-step" aria-label="Уменьшить изображение" title="Уменьшить" :disabled="!imageNatural.width || imageScale <= .01" @click="imageZoom.zoom(-1)"><AppIcon :path="mdiMinus" class="size-5" /></button>
+          <button type="button" class="zoom-percent h-10 min-w-20 flex-1 rounded-full text-xs font-semibold text-ink tabular-nums hover:bg-ink/5 dark:text-neutral-100 dark:hover:bg-white/5" aria-label="Масштаб 100 процентов" title="Исходный размер — 100%" :disabled="!imageNatural.width" @click="imageZoom.setScale(1)">{{ imagePercent }} %</button>
+          <button type="button" class="zoom-in zoom-step" aria-label="Увеличить изображение" title="Увеличить" :disabled="!imageNatural.width || imageScale >= 8" @click="imageZoom.zoom(1)"><AppIcon :path="mdiPlus" class="size-5" /></button>
+        </div>
+        <button type="button" class="zoom-fit icon-button rounded-full" :disabled="!imageNatural.width" aria-label="Вписать изображение" title="Вписать изображение в область просмотра" @click="imageZoom.fitImage"><AppIcon :path="mdiFitToScreenOutline" class="size-5" /></button>
       </div>
       <div v-if="previewKind !== 'image'" class="preview-content min-h-0 overflow-auto text-[13px]">
         <textarea v-if="editing" ref="textArea" v-model="draft" class="text-editor block w-full rounded-md border border-line bg-canvas p-2.5 font-sans leading-relaxed focus:outline-2 focus:-outline-offset-1 focus:outline-accent"
