@@ -41,11 +41,14 @@
   .icon-button { @apply inline-flex size-10 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-accent/8 hover:text-accent disabled:pointer-events-none; }
   .text-button { @apply inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-medium text-accent hover:bg-accent/8 disabled:pointer-events-none; }
   .primary-button { @apply inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-accent/12 px-3 text-[13px] font-semibold text-accent hover:bg-accent/20 disabled:pointer-events-none; }
-  .zoom-step { @apply inline-flex size-10 shrink-0 items-center justify-center rounded-full bg-white text-muted shadow-sm transition-[background-color,transform] duration-150 hover:bg-canvas active:scale-[0.96] disabled:pointer-events-none dark:bg-neutral-700 dark:text-neutral-100 dark:shadow-none dark:hover:bg-neutral-600 motion-reduce:transition-none; }
-  .preview-dialog { @apply m-auto w-[calc(100%_-_32px)] max-w-[560px] max-h-[calc(100dvh_-_32px)] rounded-xl border border-line bg-surface p-3 text-ink shadow-xl; }
+  .zoom-step { @apply inline-flex size-10 shrink-0 items-center justify-center rounded-full text-muted disabled:pointer-events-none dark:text-neutral-100; }
+  .zoom-step > span { @apply inline-flex size-8 items-center justify-center rounded-full bg-white shadow-sm transition-[background-color,transform] duration-100 dark:bg-neutral-700 dark:shadow-none motion-reduce:transition-none; }
+  .zoom-step:hover > span { @apply bg-canvas dark:bg-neutral-600; }
+  .zoom-step:active > span { @apply scale-[0.96]; }
+  .preview-dialog { @apply m-auto h-[calc(100dvh_-_16px)] w-[calc(100%_-_16px)] max-h-none max-w-none overflow-hidden rounded-xl border border-line bg-surface p-3 text-ink shadow-xl; }
   .preview-dialog[open] { @apply flex flex-col gap-3; }
   .preview-dialog.is-fullscreen { @apply fixed inset-0 m-0 h-dvh w-screen max-h-none max-w-none overflow-hidden rounded-none border-0; }
-  .preview-dialog.is-fullscreen .preview-content { @apply flex-1; }
+  .preview-dialog .preview-content { @apply flex-1; }
   .preview-dialog::backdrop { background: rgb(0 0 0 / .35); }
   .image-preview, .preview-content img {
     background: repeating-conic-gradient(#eef0f3 0% 25%, #fff 0% 50%) 0 0 / 16px 16px;

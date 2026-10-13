@@ -29,18 +29,19 @@ const previewIsText = computed(() => previewKind.value !== 'image' && !previewFi
 const previewOpen = ref(false)
 const fullscreen = ref(false)
 const imageZoom = useImageZoom()
-const { viewport: imageViewport, natural: imageNatural, scale: imageScale, percent: imagePercent, imageStyle, canvasStyle } = imageZoom
+const { viewport: imageViewport, natural: imageNatural, scale: imageScale, percent: imagePercent, imageStyle, canvasStyle, dragging, canPan } = imageZoom
 let unsubscribeShown: (() => void) | undefined
 let unsubscribeFullscreen: (() => void) | undefined
 let announcementTimer: ReturnType<typeof setTimeout> | undefined
 const allTags = computed(() => historyTags(buffer.clipboardHistory))
 const filtered = computed(() => filterHistory(buffer.clipboardHistory, search.value, selectedTags.value))
 const selected = computed(() => filtered.value.find(item => item.id === selectedId.value))
-const previewIndex = computed(() => filtered.value.findIndex(item => item.id === previewId.value))
+const previewItems = computed(() => buffer.clipboardHistory.filter(item => item.type === previewKind.value))
+const previewIndex = computed(() => previewItems.value.findIndex(item => item.id === previewId.value))
 const navigatingPreview = ref(false)
 const navigationBlocked = computed(() => editing.value || saving.value || buffer.busy || navigatingPreview.value)
 const canPreviewPrevious = computed(() => !navigationBlocked.value && previewIndex.value > 0)
-const canPreviewNext = computed(() => !navigationBlocked.value && previewIndex.value >= 0 && previewIndex.value < filtered.value.length - 1)
+const canPreviewNext = computed(() => !navigationBlocked.value && previewIndex.value >= 0 && previewIndex.value < previewItems.value.length - 1)
 watch(editor.currentId, id => { if (previewOpen.value && id) previewId.value = id })
 watch(preview, item => { if (item) previewKind.value = item.type })
 function recordLabel(item: ClipboardHistoryItem) {
@@ -64,7 +65,7 @@ async function openPreview(item: ClipboardHistoryItem) {
   previewId.value = item.id
   previewKind.value = item.type
   previewFiles.value = !!item.fileUris
-  selectedId.value = item.id
+  if (filtered.value.some(candidate => candidate.id === item.id)) selectedId.value = item.id
   imageZoom.reset()
   editor.load(item)
   await nextTick()
@@ -75,7 +76,7 @@ async function openPreview(item: ClipboardHistoryItem) {
 }
 async function movePreview(direction: number) {
   if (!previewOpen.value || (direction < 0 ? !canPreviewPrevious.value : !canPreviewNext.value)) return
-  const item = filtered.value[previewIndex.value + direction]
+  const item = previewItems.value[previewIndex.value + direction]
   if (!item) return
   navigatingPreview.value = true
   try { await openPreview(item) } finally { navigatingPreview.value = false }
@@ -310,7 +311,8 @@ onBeforeUnmount(() => {
     </footer>
 
     <dialog ref="previewDialog" class="preview-dialog" :class="{ 'is-fullscreen': fullscreen }" aria-labelledby="preview-title" @keydown.stop="handlePreviewKeydown" @cancel.prevent="closePreview">
-      <div class="flex shrink-0 items-center justify-between gap-2 select-none" :class="{ 'window-drag': !fullscreen }"><h2 id="preview-title" class="text-[15px] font-semibold">{{ previewKind === 'text' ? 'Полный текст' : KIND_LABELS[previewKind] }}</h2>
+      <div class="flex shrink-0 items-center justify-between gap-2 select-none" :class="{ 'window-drag': !fullscreen }">
+        <h2 id="preview-title" class="flex min-w-0 items-baseline gap-1.5 text-[15px] font-semibold"><span class="truncate">{{ KIND_LABELS[previewKind] }}</span><span class="preview-position shrink-0 text-xs text-muted tabular-nums" role="status">({{ previewIndex >= 0 ? previewIndex + 1 : '—' }}/{{ previewItems.length }})</span></h2>
         <div class="flex">
           <button type="button" class="fullscreen-toggle icon-button" :aria-pressed="fullscreen" :disabled="buffer.busy"
             :aria-label="fullscreen ? 'Выйти из полноэкранного режима' : 'На весь экран'" :title="(fullscreen ? 'Выйти из полноэкранного режима' : 'На весь экран') + ' (Ctrl + F)'" @click="togglePreviewFullscreen"><AppIcon :path="fullscreen ? mdiFullscreenExit : mdiFullscreen" /></button>
@@ -321,29 +323,29 @@ onBeforeUnmount(() => {
           <button type="button" class="close-preview icon-button" aria-label="Закрыть просмотр" @click="closePreview"><AppIcon :path="mdiClose" /></button>
         </div>
       </div>
-      <div class="preview-navigation flex shrink-0 items-center justify-between gap-2" aria-label="Навигация по записям">
-        <button type="button" class="preview-previous icon-button" :disabled="!canPreviewPrevious" aria-label="Предыдущая запись" title="Предыдущая запись (←)" @click="movePreview(-1)"><AppIcon :path="mdiChevronLeft" /></button>
-        <span class="text-xs text-muted tabular-nums" role="status">{{ editing ? 'Редактирование' : (previewIndex >= 0 ? previewIndex + 1 : '—') + ' / ' + filtered.length }}</span>
-        <button type="button" class="preview-next icon-button" :disabled="!canPreviewNext" aria-label="Следующая запись" title="Следующая запись (→)" @click="movePreview(1)"><AppIcon :path="mdiChevronRight" /></button>
-      </div>
       <div v-if="preview" class="preview-metadata flex shrink-0 flex-wrap gap-1.5" aria-label="Метки и источник записи">
         <TagBadge v-for="tag in preview.params.tags" :key="JSON.stringify([tag.code, tag.value])" :tag="tag" />
       </div>
       <p v-if="preview?.params.source.title" class="shrink-0 truncate text-[11px] text-muted" :title="preview.params.source.title">{{ preview.params.source.title }}</p>
-      <div v-if="previewKind === 'image' && preview" class="flex shrink-0 items-center justify-center gap-2" aria-label="Масштаб изображения">
-        <div class="zoom-controls flex h-12 w-[196px] items-center gap-1 rounded-full bg-ink/8 p-1 shadow-sm dark:bg-neutral-800">
-          <button type="button" class="zoom-out zoom-step" aria-label="Уменьшить изображение" title="Уменьшить" :disabled="!imageNatural.width || imageScale <= .01" @click="imageZoom.zoom(-1)"><AppIcon :path="mdiMinus" class="size-5" /></button>
-          <button type="button" class="zoom-percent h-10 min-w-20 flex-1 rounded-full text-xs font-semibold text-ink tabular-nums hover:bg-ink/5 dark:text-neutral-100 dark:hover:bg-white/5" aria-label="Масштаб 100 процентов" title="Исходный размер — 100%" :disabled="!imageNatural.width" @click="imageZoom.setScale(1)">{{ imagePercent }} %</button>
-          <button type="button" class="zoom-in zoom-step" aria-label="Увеличить изображение" title="Увеличить" :disabled="!imageNatural.width || imageScale >= 8" @click="imageZoom.zoom(1)"><AppIcon :path="mdiPlus" class="size-5" /></button>
+      <div class="preview-toolbar flex h-10 shrink-0 items-center justify-between gap-1" aria-label="Навигация и масштаб">
+        <button type="button" class="preview-previous icon-button" :disabled="!canPreviewPrevious" aria-label="Предыдущая запись этого типа" title="Предыдущая запись этого типа (←)" @click="movePreview(-1)"><AppIcon :path="mdiChevronLeft" /></button>
+        <div v-if="previewKind === 'image' && preview" class="flex items-center gap-1" aria-label="Масштаб изображения">
+          <div class="zoom-controls flex h-10 w-[140px] items-center rounded-full bg-ink/8 px-0.5 shadow-sm dark:bg-neutral-800">
+            <button type="button" class="zoom-out zoom-step" aria-label="Уменьшить изображение" title="Уменьшить" :disabled="!imageNatural.width || imageScale <= .01" @click="imageZoom.zoom(-1)"><span><AppIcon :path="mdiMinus" class="size-4" /></span></button>
+            <button type="button" class="zoom-percent h-10 min-w-0 flex-1 rounded-full text-xs font-semibold text-ink tabular-nums hover:bg-ink/5 dark:text-neutral-100 dark:hover:bg-white/5" aria-label="Масштаб 100 процентов" title="Исходный размер — 100%" :disabled="!imageNatural.width" @click="imageZoom.setScale(1)">{{ imagePercent }} %</button>
+            <button type="button" class="zoom-in zoom-step" aria-label="Увеличить изображение" title="Увеличить" :disabled="!imageNatural.width || imageScale >= 8" @click="imageZoom.zoom(1)"><span><AppIcon :path="mdiPlus" class="size-4" /></span></button>
+          </div>
+          <button type="button" class="zoom-fit icon-button rounded-full" :disabled="!imageNatural.width" aria-label="Вписать изображение" title="Вписать изображение в область просмотра" @click="imageZoom.fitImage"><AppIcon :path="mdiFitToScreenOutline" class="size-5" /></button>
         </div>
-        <button type="button" class="zoom-fit icon-button rounded-full" :disabled="!imageNatural.width" aria-label="Вписать изображение" title="Вписать изображение в область просмотра" @click="imageZoom.fitImage"><AppIcon :path="mdiFitToScreenOutline" class="size-5" /></button>
+        <button type="button" class="preview-next icon-button" :disabled="!canPreviewNext" aria-label="Следующая запись этого типа" title="Следующая запись этого типа (→)" @click="movePreview(1)"><AppIcon :path="mdiChevronRight" /></button>
       </div>
       <div v-if="previewKind !== 'image'" class="preview-content min-h-0 overflow-auto text-[13px]">
-        <textarea v-if="editing" ref="textArea" v-model="draft" class="text-editor block w-full rounded-md border border-line bg-canvas p-2.5 font-sans leading-relaxed focus:outline-2 focus:-outline-offset-1 focus:outline-accent"
-          :class="fullscreen ? 'h-full min-h-0 max-h-none resize-none' : 'max-h-[45dvh] min-h-[180px] resize-y'" aria-label="Редактирование полного текста" spellcheck="false" />
+        <textarea v-if="editing" ref="textArea" v-model="draft" class="text-editor block h-full min-h-0 w-full resize-none rounded-md border border-line bg-canvas p-2.5 font-sans leading-relaxed focus:outline-2 focus:-outline-offset-1 focus:outline-accent" aria-label="Редактирование полного текста" spellcheck="false" />
         <pre v-else class="font-sans whitespace-pre-wrap wrap-anywhere">{{ draft }}</pre>
       </div>
-      <div v-else-if="preview" ref="imageViewport" class="preview-content image-viewport h-[min(50dvh,360px)] min-h-0 overflow-auto overscroll-contain rounded-lg bg-canvas" @wheel="imageZoom.wheel">
+      <div v-else-if="preview" ref="imageViewport" class="preview-content image-viewport min-h-0 touch-none overflow-auto overscroll-contain rounded-lg bg-canvas select-none"
+        :class="dragging ? 'cursor-grabbing' : canPan ? 'cursor-grab' : 'cursor-default'"
+        @wheel="imageZoom.wheel" @pointerdown="imageZoom.startPan" @pointermove="imageZoom.pan" @pointerup="imageZoom.endPan" @pointercancel="imageZoom.endPan" @lostpointercapture="imageZoom.endPan">
         <div class="grid min-h-full min-w-full w-max place-items-center">
           <div class="zoom-canvas relative shrink-0 overflow-hidden" :style="canvasStyle">
             <img :src="preview.data" :alt="'Полное изображение, ' + preview.params.size" :style="imageStyle" class="zoom-image absolute top-0 left-0 block origin-top-left" draggable="false" @load="imageZoom.loaded" />
@@ -351,7 +353,6 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <p v-else>Запись уже удалена.</p>
-      <p v-if="previewKind === 'image' && preview" class="shrink-0 text-center text-[11px] text-muted">Ctrl + колесо — масштаб</p>
       <p v-if="saveError" class="text-xs text-danger" role="alert">{{ saveError }}</p>
       <p v-else-if="buffer.error" class="text-xs text-danger" role="alert">{{ buffer.error }}</p>
       <p v-else-if="editing" class="text-[11px] text-muted" role="status">{{ saving ? 'Сохраняется…' : draft !== savedText ? 'Есть изменения…' : 'Версии сохраняются в истории' }}</p>

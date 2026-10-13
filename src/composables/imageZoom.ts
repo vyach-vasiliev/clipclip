@@ -7,6 +7,9 @@ export function useImageZoom() {
   const fit = ref(true)
   const manualScale = ref(1)
   const renderedScale = ref(1)
+  const dragging = ref(false)
+  const canPan = computed(() => natural.value.width * renderedScale.value > bounds.value.width + 1
+    || natural.value.height * renderedScale.value > bounds.value.height + 1)
   const scale = computed(() => fit.value && natural.value.width && bounds.value.width && bounds.value.height
     ? Math.min(1, bounds.value.width / natural.value.width, bounds.value.height / natural.value.height) : manualScale.value)
   const percent = computed(() => Math.round(renderedScale.value * 100))
@@ -20,7 +23,9 @@ export function useImageZoom() {
   let observer: ResizeObserver | undefined
   let animation: number | undefined
   let initializing = false
-  let previousTime = 0
+  let animationStart = 0
+  let animationFrom = 1
+  let drag: { element: HTMLElement, pointerId: number, x: number, y: number, left: number, top: number } | undefined
   let anchor: { x: number, y: number, imageX: number, imageY: number } | undefined
   const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')
   function stopAnimation() {
@@ -28,19 +33,19 @@ export function useImageZoom() {
     animation = undefined
   }
   function frame(time: number) {
-    const elapsed = Math.min(64, Math.max(1, time - previousTime))
-    previousTime = time
-    const difference = Math.log(scale.value / renderedScale.value)
-    renderedScale.value = Math.abs(difference) < .0005 ? scale.value
-      : renderedScale.value * Math.exp(difference * (1 - Math.exp(-elapsed / 45)))
-    animation = renderedScale.value === scale.value ? undefined : requestAnimationFrame(frame)
+    const progress = Math.max(0, Math.min(1, (time - animationStart) / 90))
+    const eased = 1 - (1 - progress) ** 3
+    renderedScale.value = progress === 1 ? scale.value
+      : Math.exp(Math.log(animationFrom) + Math.log(scale.value / animationFrom) * eased)
+    animation = progress === 1 ? undefined : requestAnimationFrame(frame)
   }
   watch(scale, value => {
+    stopAnimation()
     if (initializing || !natural.value.width || reducedMotion?.matches) {
-      stopAnimation()
       renderedScale.value = value
-    } else if (animation === undefined) {
-      previousTime = performance.now()
+    } else {
+      animationStart = performance.now()
+      animationFrom = renderedScale.value
       animation = requestAnimationFrame(frame)
     }
   }, { flush: 'sync' })
@@ -70,6 +75,7 @@ export function useImageZoom() {
     bounds.value = { width: viewport.value?.clientWidth ?? 0, height: viewport.value?.clientHeight ?? 0 }
   }
   watch(viewport, element => {
+    endPan()
     observer?.disconnect()
     if (!element) return
     measure()
@@ -88,26 +94,53 @@ export function useImageZoom() {
   }
   function setScale(value: number, clientX?: number, clientY?: number) {
     if (!natural.value.width || !Number.isFinite(value)) return
+    endPan()
     setAnchor(clientX, clientY)
     manualScale.value = Math.max(.01, Math.min(8, value))
     fit.value = false
   }
   function zoom(direction: number) {
     if (direction < 0 && scale.value <= .01) return
-    setScale(scale.value * (direction > 0 ? 1.2 : 1 / 1.2))
+    setScale(scale.value * (direction > 0 ? 1.35 : 1 / 1.35))
   }
   function wheel(event: WheelEvent) {
     if (!event.ctrlKey || !event.deltaY) return
     event.preventDefault()
     const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? bounds.value.height : 1)
-    setScale(scale.value * Math.exp(-Math.max(-120, Math.min(120, pixels)) * .0015), event.clientX, event.clientY)
+    setScale(scale.value * Math.exp(-Math.max(-120, Math.min(120, pixels)) * .004), event.clientX, event.clientY)
   }
-  function fitImage() { anchor = undefined; fit.value = true; measure(); viewport.value?.scrollTo({ left: 0, top: 0 }) }
+  function startPan(event: PointerEvent) {
+    const element = viewport.value
+    if (!element || !natural.value.width || !canPan.value || event.button !== 0 || drag) return
+    stopAnimation()
+    initializing = true
+    manualScale.value = renderedScale.value; fit.value = false
+    initializing = false
+    anchor = undefined
+    drag = { element, pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: element.scrollLeft, top: element.scrollTop }
+    dragging.value = true
+    element.setPointerCapture?.(event.pointerId)
+    event.preventDefault()
+  }
+  function pan(event: PointerEvent) {
+    if (!drag || drag.pointerId !== event.pointerId) return
+    drag.element.scrollLeft = drag.left - (event.clientX - drag.x)
+    drag.element.scrollTop = drag.top - (event.clientY - drag.y)
+    event.preventDefault()
+  }
+  function endPan(event?: PointerEvent) {
+    if (!drag || (event && event.pointerId !== drag.pointerId)) return
+    const previous = drag
+    drag = undefined; dragging.value = false
+    if (previous.element.hasPointerCapture?.(previous.pointerId)) previous.element.releasePointerCapture(previous.pointerId)
+  }
+  function fitImage() { endPan(); anchor = undefined; fit.value = true; measure(); viewport.value?.scrollTo({ left: 0, top: 0 }) }
   function reset() {
     stopAnimation(); anchor = undefined; initializing = true
     natural.value = { width: 0, height: 0 }; manualScale.value = 1; fitImage(); renderedScale.value = scale.value
     initializing = false
   }
-  onBeforeUnmount(() => { observer?.disconnect(); stopAnimation() })
-  return { viewport, natural, scale, renderedScale, percent, imageStyle, canvasStyle, loaded, loadImage, zoom, wheel, setScale, fitImage, reset }
+  onBeforeUnmount(() => { observer?.disconnect(); stopAnimation(); endPan() })
+  return { viewport, natural, scale, renderedScale, percent, imageStyle, canvasStyle, dragging, canPan,
+    loaded, loadImage, zoom, wheel, setScale, fitImage, reset, startPan, pan, endPan }
 }
