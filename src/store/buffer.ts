@@ -77,7 +77,10 @@ export const useBufferStore = defineStore('buffer', () => {
   )
   const hide = () => action(() => window.electronAPI!.hideWindow(), 'Не удалось скрыть окно.')
   const saveRevision = (id: string, text: string) => window.electronAPI!.saveTextRevision(id, text)
+  const setFullscreen = (value: boolean) => action(
+    () => window.electronAPI!.setPreviewFullscreen(value), 'Не удалось переключить полноэкранный режим.',
+  )
 
   return { clipboardHistory, loading, paused, persistent, shortcutAvailable, canUndo, error,
-    busy, connect, disconnect, copy, remove, undo, setPaused, hide, saveRevision }
+    busy, connect, disconnect, copy, remove, undo, setPaused, hide, saveRevision, setFullscreen }
 })

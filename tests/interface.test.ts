@@ -26,6 +26,7 @@ async function setup(items?: ClipboardHistoryItem[]) {
     copyItem: vi.fn(async () => {}), deleteItem: vi.fn(async () => {}), undoDelete: vi.fn(async () => {}),
     saveTextRevision: vi.fn(async (_id, text) => item('edited', text)),
     setPaused: vi.fn(async () => {}), hideWindow: vi.fn(async () => {}),
+    setPreviewFullscreen: vi.fn(async () => {}), onPreviewFullscreenChanged: vi.fn(() => vi.fn()),
   }
   window.electronAPI = api
   const pinia = createPinia()
@@ -149,6 +150,43 @@ describe('search and navigation', () => {
     expect(wrapper.get('.preview-content pre').text()).toContain('second line')
     expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalled()
     expect(api.copyItem).not.toHaveBeenCalled()
+  })
+  it('toggles fullscreen by Ctrl+F on either keyboard layout and exits by Escape', async () => {
+    const { wrapper, api } = await setup()
+    await wrapper.get('.preview-button').trigger('click')
+    await flushPromises()
+    await wrapper.get('dialog').trigger('keydown', { key: 'а', code: 'KeyF', ctrlKey: true })
+    await flushPromises()
+    expect(api.setPreviewFullscreen).toHaveBeenLastCalledWith(true)
+    expect(wrapper.get('dialog').classes()).toContain('is-fullscreen')
+    await wrapper.get('dialog').trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(api.setPreviewFullscreen).toHaveBeenLastCalledWith(false)
+    expect(wrapper.get('dialog').classes()).not.toContain('is-fullscreen')
+    expect(api.hideWindow).not.toHaveBeenCalled()
+  })
+  it('restores the window on close and does not enter fullscreen outside a preview', async () => {
+    const { wrapper, api } = await setup()
+    await wrapper.get('input').trigger('keydown', { key: 'f', code: 'KeyF', ctrlKey: true })
+    expect(api.setPreviewFullscreen).not.toHaveBeenCalled()
+    await wrapper.get('.preview-button').trigger('click')
+    await flushPromises()
+    await wrapper.get('.fullscreen-toggle').trigger('click')
+    await flushPromises()
+    await wrapper.get('.close-preview').trigger('click')
+    await flushPromises()
+    expect(vi.mocked(api.setPreviewFullscreen).mock.calls.map(call => call[0])).toEqual([true, false])
+    expect(HTMLDialogElement.prototype.close).toHaveBeenCalled()
+  })
+  it('keeps the preview usable after a failed fullscreen request', async () => {
+    const { wrapper, api } = await setup()
+    await wrapper.get('.preview-button').trigger('click')
+    await flushPromises()
+    vi.mocked(api.setPreviewFullscreen).mockRejectedValueOnce(new Error('fixture denied'))
+    await wrapper.get('.fullscreen-toggle').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('dialog').classes()).not.toContain('is-fullscreen')
+    expect(wrapper.get('dialog [role="alert"]').text()).toContain('полноэкранный')
   })
   it('starts a new invocation with an empty search and the newest record', async () => {
     const { wrapper, api } = await setup([item('first'), item('second')])

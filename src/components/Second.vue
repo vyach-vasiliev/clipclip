@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck } from '@mdi/js'
+import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck, mdiFullscreen, mdiFullscreenExit, mdiMagnifyPlusOutline, mdiMagnifyMinusOutline, mdiFitToScreenOutline } from '@mdi/js'
 import { HISTORY_LIMIT, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
 import { useBufferStore } from '../store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags, isEditingTarget, isActionTarget } from '../utils/history'
 import SearchPanel from './SearchPanel.vue'
 import AppIcon from './AppIcon.vue'
 import { useTextEditor } from '../composables/textEditor'
+import { useImageZoom } from '../composables/imageZoom'
 
 const buffer = useBufferStore()
 const search = ref('')
@@ -22,7 +23,12 @@ const editor = useTextEditor(buffer.saveRevision)
 const { draft, editing, saving, saveError, originalText, savedText } = editor
 const textArea = ref<HTMLTextAreaElement>()
 const previewKind = ref<'text' | 'image'>('text')
+const previewOpen = ref(false)
+const fullscreen = ref(false)
+const imageZoom = useImageZoom()
+const { viewport: imageViewport, natural: imageNatural, scale: imageScale, percent: imagePercent, imageStyle } = imageZoom
 let unsubscribeShown: (() => void) | undefined
+let unsubscribeFullscreen: (() => void) | undefined
 let announcementTimer: ReturnType<typeof setTimeout> | undefined
 const allTags = computed(() => historyTags(buffer.clipboardHistory))
 const filtered = computed(() => filterHistory(buffer.clipboardHistory, search.value, selectedTags.value))
@@ -47,13 +53,43 @@ async function openPreview(item: ClipboardHistoryItem) {
   if (!await editor.flush()) return
   previewId.value = item.id
   previewKind.value = item.type
+  imageZoom.reset()
   editor.load(item)
   await nextTick()
   previewDialog.value?.showModal()
+  previewOpen.value = true
+  const image = previewDialog.value?.querySelector<HTMLImageElement>('.zoom-image')
+  if (image?.complete) imageZoom.loadImage(image)
+}
+async function setPreviewFullscreen(value: boolean) {
+  if (!await buffer.setFullscreen(value)) return false
+  fullscreen.value = value
+  return true
+}
+function togglePreviewFullscreen() {
+  if (previewOpen.value && !buffer.busy) void setPreviewFullscreen(!fullscreen.value)
+}
+async function dismissPreview() {
+  if (fullscreen.value && !await setPreviewFullscreen(false)) return false
+  previewDialog.value?.close()
+  previewOpen.value = false
+  imageZoom.reset()
+  return true
 }
 async function closePreview() {
   if (!await editor.flush()) return
-  previewDialog.value?.close()
+  await dismissPreview()
+}
+function handlePreviewKeydown(event: KeyboardEvent) {
+  if (event.isComposing) return
+  if (event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
+    && (event.code === 'KeyF' || event.key.toLowerCase() === 'f')) {
+    event.preventDefault()
+    if (!event.repeat) togglePreviewFullscreen()
+  } else if (event.key === 'Escape' && fullscreen.value) {
+    event.preventDefault()
+    if (!buffer.busy) void setPreviewFullscreen(false)
+  }
 }
 async function toggleEditing() {
   await editor.toggle()
@@ -67,7 +103,7 @@ async function copyPreview() {
 }
 async function prepareQuickPick() {
   if (!await editor.flush()) { previewDialog.value?.showModal(); return }
-  previewDialog.value?.close()
+  if (!await dismissPreview()) return
   clearFilters()
   selectedId.value = filtered.value[0]?.id ?? null
   searchPanel.value?.focus()
@@ -83,7 +119,7 @@ async function copyById(id: string, hide = false) {
   copyingId.value = null
   if (copied) {
     announce('Скопировано в буфер обмена.')
-    if (hide) { previewDialog.value?.close(); await buffer.hide() }
+    if (hide && await dismissPreview()) await buffer.hide()
   }
 }
 async function remove(item: ClipboardHistoryItem) {
@@ -127,11 +163,13 @@ function shortText(item: ClipboardHistoryItem) { return item.data.slice(0, 1200)
 onMounted(() => {
   document.addEventListener('keydown', handleKeydown)
   unsubscribeShown = window.electronAPI?.onWindowShown(prepareQuickPick)
+  unsubscribeFullscreen = window.electronAPI?.onPreviewFullscreenChanged(value => { fullscreen.value = value })
   searchPanel.value?.focus()
 })
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', handleKeydown)
   unsubscribeShown?.()
+  unsubscribeFullscreen?.()
   if (announcementTimer) clearTimeout(announcementTimer)
 })
 </script>
@@ -202,9 +240,11 @@ onBeforeUnmount(() => {
       <span><kbd>↑</kbd><kbd>↓</kbd> выбор</span><span><kbd>Enter</kbd> копировать</span><span><kbd>Esc</kbd> скрыть</span>
     </footer>
 
-    <dialog ref="previewDialog" class="preview-dialog" aria-labelledby="preview-title" @keydown.stop @cancel.prevent="closePreview">
+    <dialog ref="previewDialog" class="preview-dialog" :class="{ 'is-fullscreen': fullscreen }" aria-labelledby="preview-title" @keydown.stop="handlePreviewKeydown" @cancel.prevent="closePreview">
       <div class="flex shrink-0 items-center justify-between gap-2"><h2 id="preview-title" class="text-[15px] font-semibold">{{ previewKind === 'image' ? 'Изображение' : 'Полный текст' }}</h2>
         <div class="flex">
+          <button type="button" class="fullscreen-toggle icon-button" :aria-pressed="fullscreen" :disabled="buffer.busy"
+            :aria-label="fullscreen ? 'Выйти из полноэкранного режима' : 'На весь экран'" :title="(fullscreen ? 'Выйти из полноэкранного режима' : 'На весь экран') + ' (Ctrl + F)'" @click="togglePreviewFullscreen"><AppIcon :path="fullscreen ? mdiFullscreenExit : mdiFullscreen" /></button>
           <button v-if="previewKind === 'text'" type="button" class="edit-toggle icon-button" :aria-pressed="editing"
             :aria-label="editing ? 'Завершить редактирование' : 'Редактировать текст'" :title="editing ? 'Завершить редактирование' : 'Редактировать текст'" @click="toggleEditing"><AppIcon :path="editing ? mdiCheck : mdiPencilOutline" /></button>
           <button v-if="editing" type="button" class="reset-edit icon-button" :disabled="draft === originalText && draft === savedText"
@@ -212,12 +252,24 @@ onBeforeUnmount(() => {
           <button type="button" class="close-preview icon-button" aria-label="Закрыть просмотр" @click="closePreview"><AppIcon :path="mdiClose" /></button>
         </div>
       </div>
-      <div class="preview-content min-h-0 overflow-auto text-[13px]">
-        <textarea v-if="editing" ref="textArea" v-model="draft" class="text-editor block max-h-[45dvh] min-h-[180px] w-full resize-y rounded-md border border-line bg-canvas p-2.5 font-sans leading-relaxed focus:outline-2 focus:-outline-offset-1 focus:outline-accent" aria-label="Редактирование полного текста" spellcheck="false" />
-        <pre v-else-if="previewKind === 'text'" class="font-sans whitespace-pre-wrap wrap-anywhere">{{ draft }}</pre>
-        <img v-else-if="preview" :src="preview.data" :alt="'Полное изображение, ' + preview.params.size" class="block max-w-full" />
-        <p v-else>Запись уже удалена.</p>
+      <div v-if="previewKind === 'image' && preview" class="flex shrink-0 items-center justify-center gap-1" aria-label="Масштаб изображения">
+        <button type="button" class="zoom-out icon-button" aria-label="Уменьшить изображение" title="Уменьшить" :disabled="!imageNatural.width || imageScale <= .01" @click="imageZoom.zoom(-1)"><AppIcon :path="mdiMagnifyMinusOutline" /></button>
+        <button type="button" class="zoom-percent text-button min-w-16 tabular-nums" aria-label="Масштаб 100 процентов" title="Исходный размер — 100%" :disabled="!imageNatural.width" @click="imageZoom.setScale(1)">{{ imagePercent }}%</button>
+        <button type="button" class="zoom-in icon-button" aria-label="Увеличить изображение" title="Увеличить" :disabled="!imageNatural.width || imageScale >= 8" @click="imageZoom.zoom(1)"><AppIcon :path="mdiMagnifyPlusOutline" /></button>
+        <button type="button" class="zoom-fit text-button" :disabled="!imageNatural.width" title="Вписать изображение в область просмотра" @click="imageZoom.fitImage"><AppIcon :path="mdiFitToScreenOutline" class="size-4" />Вписать</button>
       </div>
+      <div v-if="previewKind === 'text'" class="preview-content min-h-0 overflow-auto text-[13px]">
+        <textarea v-if="editing" ref="textArea" v-model="draft" class="text-editor block w-full rounded-md border border-line bg-canvas p-2.5 font-sans leading-relaxed focus:outline-2 focus:-outline-offset-1 focus:outline-accent"
+          :class="fullscreen ? 'h-full min-h-0 max-h-none resize-none' : 'max-h-[45dvh] min-h-[180px] resize-y'" aria-label="Редактирование полного текста" spellcheck="false" />
+        <pre v-else-if="previewKind === 'text'" class="font-sans whitespace-pre-wrap wrap-anywhere">{{ draft }}</pre>
+      </div>
+      <div v-else-if="preview" ref="imageViewport" class="preview-content image-viewport h-[min(50dvh,360px)] min-h-0 overflow-auto overscroll-contain rounded-lg bg-canvas" @wheel="imageZoom.wheel">
+        <div class="grid min-h-full min-w-full w-max place-items-center">
+          <img :src="preview.data" :alt="'Полное изображение, ' + preview.params.size" :style="imageStyle" class="zoom-image block shrink-0" draggable="false" @load="imageZoom.loaded" />
+        </div>
+      </div>
+      <p v-else>Запись уже удалена.</p>
+      <p v-if="previewKind === 'image' && preview" class="shrink-0 text-center text-[11px] text-muted">Ctrl + колесо — масштаб</p>
       <p v-if="saveError" class="text-xs text-danger" role="alert">{{ saveError }}</p>
       <p v-else-if="buffer.error" class="text-xs text-danger" role="alert">{{ buffer.error }}</p>
       <p v-else-if="editing" class="text-[11px] text-muted" role="status">{{ saving ? 'Сохраняется…' : draft !== savedText ? 'Есть изменения…' : 'Версии сохраняются в истории' }}</p>

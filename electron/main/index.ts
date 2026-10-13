@@ -111,6 +111,30 @@ function validateSender(event: IpcMainInvokeEvent) {
   }
 }
 
+async function setWindowFullscreen(fullscreen: boolean): Promise<void> {
+  const window = win
+  if (!window || window.isDestroyed()) throw new Error('Окно недоступно.')
+  if (window.isFullScreen() === fullscreen) return
+  await new Promise<void>((resolve, reject) => {
+    const finish = (error?: Error) => {
+      clearTimeout(timer)
+      if (fullscreen) window.removeListener('enter-full-screen', changed)
+      else window.removeListener('leave-full-screen', changed)
+      window.removeListener('closed', closed)
+      if (error) reject(error)
+      else resolve()
+    }
+    const changed = () => finish()
+    const closed = () => finish(new Error('Окно закрыто.'))
+    const timer = setTimeout(() => finish(window.isDestroyed() || window.isFullScreen() !== fullscreen
+      ? new Error('Полноэкранный режим недоступен.') : undefined), 3000)
+    if (fullscreen) window.once('enter-full-screen', changed)
+    else window.once('leave-full-screen', changed)
+    window.once('closed', closed)
+    try { window.setFullScreen(fullscreen) } catch { finish(new Error('Полноэкранный режим недоступен.')) }
+  })
+}
+
 function registerIpc() {
   const handle = (channel: string, action: (value?: unknown) => unknown) => {
     ipcMain.handle(channel, (event, value: unknown) => { validateSender(event); return action(value) })
@@ -141,7 +165,12 @@ function registerIpc() {
     if (typeof value !== 'boolean') throw new Error('Некорректное состояние записи.')
     history.setPaused(value)
   })
-  handle(CHANNELS.hideWindow, () => {
+  handle(CHANNELS.setPreviewFullscreen, value => {
+    if (typeof value !== 'boolean') throw new Error('Некорректный полноэкранный режим.')
+    return setWindowFullscreen(value)
+  })
+  handle(CHANNELS.hideWindow, async () => {
+    await setWindowFullscreen(false)
     if (!tray && !shortcutAvailable && !testMode) win?.minimize()
     else win?.hide()
   })
@@ -163,6 +192,11 @@ function createWindow() {
     webPreferences: { preload, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
   })
   const created = win
+  const notifyFullscreen = (fullscreen: boolean) => {
+    if (!created.webContents.isDestroyed()) created.webContents.send(CHANNELS.previewFullscreenChanged, fullscreen)
+  }
+  created.on('enter-full-screen', () => notifyFullscreen(true))
+  created.on('leave-full-screen', () => notifyFullscreen(false))
   if (process.platform === 'win32' && (!testMode || process.env.CLIPCLIP_TEST_SHORTCUT === '1')) {
     disposeWindowShortcut?.()
     try { disposeWindowShortcut = registerWindowsShortcut(created, showWindow) }
@@ -179,7 +213,10 @@ function createWindow() {
   created.webContents.on('did-finish-load', broadcast)
   created.once('ready-to-show', () => { created.show(); created.focus() })
   created.on('close', event => {
-    if (!quitting && process.platform !== 'darwin' && tray) { event.preventDefault(); created.hide() }
+    if (!quitting && process.platform !== 'darwin' && tray) {
+      event.preventDefault()
+      void setWindowFullscreen(false).catch(() => {}).finally(() => { if (!created.isDestroyed()) created.hide() })
+    }
   })
   created.on('closed', () => {
     disposeWindowShortcut?.()

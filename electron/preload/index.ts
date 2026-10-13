@@ -16,6 +16,8 @@ const api: ElectronAPI = {
   undoDelete: () => ipcRenderer.invoke(CHANNELS.undoDelete),
   setPaused: paused => ipcRenderer.invoke(CHANNELS.setPaused, paused),
   hideWindow: () => ipcRenderer.invoke(CHANNELS.hideWindow),
+  setPreviewFullscreen: fullscreen => ipcRenderer.invoke(CHANNELS.setPreviewFullscreen, fullscreen),
+  onPreviewFullscreenChanged: callback => subscribe<boolean>(CHANNELS.previewFullscreenChanged, callback),
   onWindowShown: callback => subscribe<void>(CHANNELS.windowShown, callback),
 }
 contextBridge.exposeInMainWorld('electronAPI', api)

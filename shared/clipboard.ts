@@ -54,6 +54,8 @@ export interface ElectronAPI {
   undoDelete(): Promise<void>
   setPaused(paused: boolean): Promise<void>
   hideWindow(): Promise<void>
+  setPreviewFullscreen(fullscreen: boolean): Promise<void>
+  onPreviewFullscreenChanged(callback: (fullscreen: boolean) => void): () => void
   onWindowShown(callback: () => void): () => void
 }
 
@@ -67,6 +69,8 @@ export const CHANNELS = {
   setPaused: 'history:pause',
   hideWindow: 'window:hide',
   windowShown: 'window:shown',
+  setPreviewFullscreen: 'window:preview-fullscreen',
+  previewFullscreenChanged: 'window:preview-fullscreen-changed',
 } as const
 
 export const HISTORY_LIMIT = 10
