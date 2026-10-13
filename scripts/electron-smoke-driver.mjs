@@ -246,11 +246,26 @@ async function run() {
     assert.deepEqual(await evaluate('({width: document.querySelector("dialog").getBoundingClientRect().width, height: document.querySelector("dialog").getBoundingClientRect().height})'), { width: compactPreview.dialog.width, height: compactPreview.dialog.height })
     nativeTheme.themeSource = 'dark'
     await delay(100)
+    assert.equal(await evaluate('getComputedStyle(document.querySelector("dialog"), "::backdrop").backgroundColor'), 'rgb(17, 23, 35)')
+    assert.equal(await evaluate('getComputedStyle(document.querySelector("dialog")).boxShadow'), 'none')
     await screenshot(window, 'image-zoom-dark.png')
     nativeTheme.themeSource = 'light'
     await delay(100)
+    assert.equal(await evaluate('getComputedStyle(document.querySelector("dialog"), "::backdrop").backgroundColor'), 'rgb(244, 246, 250)')
+    assert.equal(await evaluate('getComputedStyle(document.querySelector("dialog")).boxShadow'), 'none')
     await screenshot(window, 'image-zoom.png')
-    await evaluate('document.querySelector(".close-preview").click()')
+    await evaluate('document.querySelector(".fullscreen-toggle").click()')
+    await waitFullscreen(true)
+    await evaluate('Array.from(document.querySelectorAll(".preview-tag")).find(button => button.textContent.trim() === "Изображение").click()')
+    await waitFullscreen(false)
+    await delay(50)
+    assert.equal(await evaluate('document.querySelector("dialog").open'), false)
+    assert.equal(await evaluate('document.querySelector(".filter-row .tag-badge").textContent.trim()'), 'Изображение')
+    assert.equal(await evaluate('document.querySelectorAll(".record-select").length'), 2)
+    assert.equal(await evaluate('document.activeElement === document.querySelector("input")'), true)
+    assert.equal(window.isVisible(), true)
+    await screenshot(window, 'preview-tag-search.png')
+    await evaluate('document.querySelector(".filter-row .tag-badge").click()')
     await delay(50)
 
     // Fill the compact list without reading or changing the system clipboard.

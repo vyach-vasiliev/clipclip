@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
 import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck, mdiFullscreen, mdiFullscreenExit, mdiPlus, mdiMinus, mdiFitToScreenOutline, mdiChevronLeft, mdiChevronRight } from '@mdi/js'
-import { HISTORY_LIMIT, KIND_LABELS, type ClipboardKind, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
+import { HISTORY_LIMIT, KIND_LABELS, TAG_LABELS, type ClipboardKind, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
 import { useBufferStore } from '../store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags, isEditingTarget, isActionTarget } from '../utils/history'
 import SearchPanel from './SearchPanel.vue'
@@ -39,7 +39,8 @@ const selected = computed(() => filtered.value.find(item => item.id === selected
 const previewItems = computed(() => buffer.clipboardHistory.filter(item => item.type === previewKind.value))
 const previewIndex = computed(() => previewItems.value.findIndex(item => item.id === previewId.value))
 const navigatingPreview = ref(false)
-const navigationBlocked = computed(() => editing.value || saving.value || buffer.busy || navigatingPreview.value)
+const filteringPreview = ref(false)
+const navigationBlocked = computed(() => editing.value || saving.value || buffer.busy || navigatingPreview.value || filteringPreview.value)
 const canPreviewPrevious = computed(() => !navigationBlocked.value && previewIndex.value > 0)
 const canPreviewNext = computed(() => !navigationBlocked.value && previewIndex.value >= 0 && previewIndex.value < previewItems.value.length - 1)
 watch(editor.currentId, id => { if (previewOpen.value && id) previewId.value = id })
@@ -99,6 +100,19 @@ async function dismissPreview() {
 async function closePreview() {
   if (!await editor.flush()) return
   await dismissPreview()
+}
+async function searchPreviewTag(tag: ClipboardTag) {
+  if (!previewOpen.value || buffer.busy || saving.value || filteringPreview.value || navigatingPreview.value) return
+  filteringPreview.value = true
+  try {
+    if (!await editor.flush() || !await dismissPreview()) return
+    search.value = ''
+    selectedTags.value = [{ ...tag }]
+    selectedId.value = filtered.value[0]?.id ?? null
+    await nextTick()
+    searchPanel.value?.focus()
+    document.querySelector('.history-list')?.scrollTo({ top: 0 })
+  } finally { filteringPreview.value = false }
 }
 function handlePreviewKeydown(event: KeyboardEvent) {
   if (event.isComposing) return
@@ -324,7 +338,13 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div v-if="preview" class="preview-metadata flex shrink-0 flex-wrap gap-1.5" aria-label="Метки и источник записи">
-        <TagBadge v-for="tag in preview.params.tags" :key="JSON.stringify([tag.code, tag.value])" :tag="tag" />
+        <button v-for="tag in preview.params.tags" :key="JSON.stringify([tag.code, tag.value])" type="button"
+          class="preview-tag group inline-flex min-h-10 min-w-10 max-w-full items-center rounded-lg"
+          :disabled="buffer.busy || saving || filteringPreview || navigatingPreview"
+          :aria-label="'Найти по метке. ' + TAG_LABELS[tag.code] + ': ' + tag.value"
+          :title="'Найти по метке. ' + TAG_LABELS[tag.code] + ': ' + tag.value" @click="searchPreviewTag(tag)">
+          <TagBadge :tag="tag" />
+        </button>
       </div>
       <p v-if="preview?.params.source.title" class="shrink-0 truncate text-[11px] text-muted" :title="preview.params.source.title">{{ preview.params.source.title }}</p>
       <div class="preview-toolbar flex h-10 shrink-0 items-center justify-between gap-1" aria-label="Навигация и масштаб">
