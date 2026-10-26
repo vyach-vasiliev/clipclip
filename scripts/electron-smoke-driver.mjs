@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import '../dist-electron/main/index.js'
 import { checkWindowsShortcut } from './windows-shortcut-check.mjs'
+import { checkWindowsClipboardSource } from './windows-clipboard-source-check.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 process.on('uncaughtException', error => { console.error(error); app.exit(1) })
@@ -81,6 +82,7 @@ async function run() {
       await checkWindowsShortcut(window)
     }
     if (process.platform === 'win32') {
+      await checkWindowsClipboardSource(window, root)
       const { activeWindow } = await import('get-windows')
       await activeWindow({ accessibilityPermission: false, screenRecordingPermission: false })
       assert.equal(safeStorage.isEncryptionAvailable(), true)

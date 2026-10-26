@@ -125,7 +125,7 @@ export class ClipboardHistory {
           this.error = 'Запись больше 8 МБ пропущена.'
           return
         }
-        this.add(type, data, size, source, fileUris)
+        this.add(type, data, size, type === 'image' ? snapshot.imageSource ?? source : source, fileUris)
       }
       const documents = isFileUriList(snapshot.fileUris) && snapshot.fileUris.some(isDocumentFile) ? snapshot.fileUris : undefined
       if (filesChanged && documents) {

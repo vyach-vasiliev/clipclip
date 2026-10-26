@@ -33,6 +33,7 @@ export interface ClipboardImage {
 export interface ClipboardSnapshot {
   text: string
   image: ClipboardImage | null
+  imageSource?: ClipboardSource
   fileUris?: string[]
   warning?: string
 }

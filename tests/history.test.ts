@@ -14,6 +14,19 @@ function setup(snapshot: ClipboardSnapshot = { text: 'hello', image: null }) {
 afterEach(() => { active.splice(0).forEach(history => history.dispose()); vi.useRealTimers() })
 
 describe('clipboard history', () => {
+  it('prefers clipboard ownership for images while leaving text attribution unchanged', async () => {
+    const imageSource = { name: 'Ножницы', title: '' }
+    const { history } = setup({ text: 'ordinary text', image, imageSource })
+    await history.capture()
+    expect(history.items.find(item => item.type === 'image')?.params.source).toEqual(imageSource)
+    expect(history.items.find(item => item.type === 'image')?.params.tags).toContainEqual({ code: 'source', value: 'Ножницы' })
+    expect(history.items.find(item => item.type === 'text')?.params.source.name).toBe('Fixture: app')
+  })
+  it('falls back to the active source when an image has no clipboard owner attribution', async () => {
+    const { history } = setup({ text: '', image })
+    await history.capture()
+    expect(history.items[0].params.source.name).toBe('Fixture: app')
+  })
   it('captures links and text from document sources with the right type and keeps versions editable', async () => {
     const { history, setSnapshot } = setup({ text: 'https://example.test', image: null })
     await history.capture()

@@ -7,6 +7,7 @@ import { ClipboardHistory, ClipboardMonitor } from './history'
 import { EncryptedHistoryStorage } from './storage'
 import { assetPath, isTrustedPage, requireId, requireTextRevision } from './security'
 import { registerWindowsShortcut } from './windowsShortcut'
+import { getWindowsClipboardOwnerReader } from './windowsClipboardSource'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const rendererRoot = path.join(root, 'dist')
@@ -49,6 +50,9 @@ async function readSnapshot(): Promise<ClipboardSnapshot> {
       image: fixture && !fixture.isEmpty() ? { data: fixture.toDataURL(), ...fixture.getSize() } : null,
       fileUris: process.env.CLIPCLIP_TEST_FILES ? JSON.parse(process.env.CLIPCLIP_TEST_FILES) : undefined }
   }
+  // Capture the owner before asynchronous clipboard decoding can outlive its window.
+  const ownerReader = getWindowsClipboardOwnerReader()
+  const ownerCapture = ownerReader?.capture()
   const items = await clipboard.read()
   const textItem = items.find(item => item.types.includes('text/plain'))
   const textBlob = textItem ? await textItem.getType('text/plain') : null
@@ -72,7 +76,7 @@ async function readSnapshot(): Promise<ClipboardSnapshot> {
   if (blob.size > MAX_ITEM_BYTES) return { text, image: null, fileUris, warning: 'Изображение больше 8 МБ пропущено.' }
   const bytes = Buffer.from(await blob.arrayBuffer())
   const digest = createHash('sha256').update(bytes).digest('hex')
-  if (cachedImage?.digest === digest) return { text, image: cachedImage.image, fileUris, warning }
+  if (cachedImage?.digest === digest) return { text, image: cachedImage.image, imageSource: ownerReader?.resolve(ownerCapture), fileUris, warning }
   const image = nativeImage.createFromBuffer(bytes)
   if (image.isEmpty()) return { text, image: null, fileUris, warning: 'Изображение не удалось прочитать.' }
   const { width, height } = image.getSize()
@@ -80,7 +84,7 @@ async function readSnapshot(): Promise<ClipboardSnapshot> {
   const data = image.toDataURL()
   if (Buffer.byteLength(data, 'utf8') > MAX_ITEM_BYTES) return { text, image: null, fileUris, warning: 'Изображение больше 8 МБ пропущено.' }
   cachedImage = { digest, image: { data, width, height } }
-  return { text, image: cachedImage.image, fileUris, warning }
+  return { text, image: cachedImage.image, imageSource: ownerReader?.resolve(ownerCapture), fileUris, warning }
 }
 
 async function getSource() {
