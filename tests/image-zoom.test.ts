@@ -12,7 +12,7 @@ function setup(reducedMotion = false) {
   let time = performance.now()
   vi.spyOn(performance, 'now').mockImplementation(() => time)
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { frames.set(++id, callback); return id })
-  vi.stubGlobal('cancelAnimationFrame', (frame: number) => frames.delete(frame))
+  vi.stubGlobal('cancelAnimationFrame', vi.fn((frame: number) => frames.delete(frame)))
   vi.stubGlobal('matchMedia', () => ({ matches: reducedMotion }))
   vi.stubGlobal('ResizeObserver', class { constructor(callback: () => void) { resized = callback } observe() {} disconnect() {} })
   let zoom!: ReturnType<typeof useImageZoom>
@@ -31,9 +31,9 @@ function setup(reducedMotion = false) {
   const image = document.createElement('img')
   Object.defineProperties(image, { naturalWidth: { value: 1200 }, naturalHeight: { value: 800 } })
   zoom.loadImage(image)
-  const advance = async (count = 1) => {
+  const advance = async (count = 1, interval = 16) => {
     for (let step = 0; step < count; step++) {
-      time += 16
+      time += interval
       const callbacks = [...frames.values()]
       frames.clear()
       callbacks.forEach(callback => callback(time))
@@ -98,7 +98,7 @@ describe('image viewing', () => {
     viewport.scrollLeft = 100
     viewport.scrollTop = 100
     zoom.wheel(new WheelEvent('wheel', { deltaY: -5, ctrlKey: true, clientX: 150, clientY: 100, cancelable: true }))
-    expect(zoom.scale.value).toBeCloseTo(Math.exp(.02))
+    expect(zoom.scale.value).toBeCloseTo(Math.exp(.0125))
     await advance(30)
     expect((viewport.scrollLeft + 150) / zoom.renderedScale.value).toBeCloseTo(250)
     zoom.zoom(1)
@@ -162,5 +162,65 @@ describe('image viewing', () => {
     expect(zoom.dragging.value).toBe(false)
     zoom.pan(pointer('pointermove', 0, 0))
     expect(viewport.scrollLeft).toBe(0)
+  })
+  it('keeps one frame loop for high-frequency fractional input and reverses without following an old target', async () => {
+    const { zoom, advance, frames } = setup()
+    zoom.setScale(1); await advance(6)
+    const cancelled = vi.mocked(cancelAnimationFrame)
+    cancelled.mockClear()
+    const pinch = (deltaY: number) => zoom.wheel(new WheelEvent('wheel', { ctrlKey: true, deltaY, clientX: 150, clientY: 100, cancelable: true }))
+    let previous = zoom.renderedScale.value
+    for (let step = 0; step < 12; step++) {
+      for (let event = 0; event < 4; event++) pinch(-.75)
+      expect(frames.size).toBe(1)
+      await advance()
+      expect(zoom.renderedScale.value).toBeGreaterThan(previous)
+      expect(zoom.renderedScale.value).toBeLessThanOrEqual(zoom.scale.value)
+      previous = zoom.renderedScale.value
+    }
+    expect(cancelled).not.toHaveBeenCalled()
+    expect(zoom.scale.value).toBeCloseTo(Math.exp(36 * .0025))
+    pinch(1)
+    await advance()
+    expect(zoom.renderedScale.value).toBeLessThan(previous)
+    await advance(20)
+    expect(zoom.renderedScale.value).toBe(zoom.scale.value)
+    expect(frames.size).toBe(0)
+  })
+  it.each([8, 16, 32])('smooths by elapsed frame time at %s ms intervals', async interval => {
+    const { zoom, advance } = setup()
+    zoom.setScale(1); await advance(6)
+    zoom.wheel(new WheelEvent('wheel', { ctrlKey: true, deltaY: -10, cancelable: true }))
+    await advance(32 / interval, interval)
+    expect(Math.log(zoom.renderedScale.value)).toBeCloseTo(.025 * (1 - Math.exp(-32 / 20)), 8)
+  })
+  it('holds the same image point through a long gesture even when scroll positions are rounded', async () => {
+    const { zoom, viewport, advance } = setup()
+    await nextTick()
+    zoom.setScale(1); await advance(6)
+    let left = 100, top = 100
+    Object.defineProperties(viewport, {
+      scrollLeft: { configurable: true, get: () => left, set: (value: number) => { left = Math.round(value) } },
+      scrollTop: { configurable: true, get: () => top, set: (value: number) => { top = Math.round(value) } },
+    })
+    for (let event = 0; event < 120; event++) {
+      zoom.wheel(new WheelEvent('wheel', { ctrlKey: true, deltaY: -.5, clientX: 150, clientY: 100, cancelable: true }))
+      await advance()
+      expect(Math.abs(left + 150 - 250 * zoom.renderedScale.value)).toBeLessThanOrEqual(.51)
+      expect(Math.abs(top + 100 - 200 * zoom.renderedScale.value)).toBeLessThanOrEqual(.51)
+    }
+  })
+  it('ends precision animation on reset and honors reduced motion', async () => {
+    const { zoom, frames, advance } = setup()
+    zoom.wheel(new WheelEvent('wheel', { ctrlKey: true, deltaY: -1 }))
+    expect(frames.size).toBe(1)
+    zoom.reset(); await advance()
+    expect(frames.size).toBe(0)
+    wrappers.splice(0).forEach(wrapper => wrapper.unmount())
+    vi.restoreAllMocks()
+    const reduced = setup(true)
+    reduced.zoom.wheel(new WheelEvent('wheel', { ctrlKey: true, deltaY: -1 }))
+    expect(reduced.zoom.renderedScale.value).toBe(reduced.zoom.scale.value)
+    expect(reduced.frames.size).toBe(0)
   })
 })

@@ -363,7 +363,7 @@ onBeforeUnmount(() => {
         <textarea v-if="editing" ref="textArea" v-model="draft" class="text-editor block h-full min-h-0 w-full resize-none rounded-md border border-line bg-canvas p-2.5 font-sans leading-relaxed focus:outline-2 focus:-outline-offset-1 focus:outline-accent" aria-label="Редактирование полного текста" spellcheck="false" />
         <pre v-else class="font-sans whitespace-pre-wrap wrap-anywhere">{{ draft }}</pre>
       </div>
-      <div v-else-if="preview" ref="imageViewport" class="preview-content image-viewport min-h-0 touch-none overflow-auto overscroll-contain rounded-lg bg-canvas select-none"
+      <div v-else-if="preview" ref="imageViewport" class="preview-content image-viewport min-h-0 touch-none overflow-scroll overscroll-contain rounded-lg bg-canvas select-none"
         :class="dragging ? 'cursor-grabbing' : canPan ? 'cursor-grab' : 'cursor-default'"
         @wheel="imageZoom.wheel" @pointerdown="imageZoom.startPan" @pointermove="imageZoom.pan" @pointerup="imageZoom.endPan" @pointercancel="imageZoom.endPan" @lostpointercapture="imageZoom.endPan">
         <div class="grid min-h-full min-w-full w-max place-items-center">

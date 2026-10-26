@@ -25,6 +25,11 @@ export function useImageZoom() {
   let initializing = false
   let animationStart = 0
   let animationFrom = 1
+  let precisionInput = false
+  let precisionAnimation = false
+  let previousFrameTime = 0
+  let lastPrecisionTime = -Infinity
+  let precisionDirection = 0
   let drag: { element: HTMLElement, pointerId: number, x: number, y: number, left: number, top: number } | undefined
   let anchor: { x: number, y: number, imageX: number, imageY: number } | undefined
   const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')
@@ -33,6 +38,16 @@ export function useImageZoom() {
     animation = undefined
   }
   function frame(time: number) {
+    if (precisionAnimation) {
+      const elapsed = Math.max(0, time - previousFrameTime)
+      previousFrameTime = time
+      const difference = Math.log(scale.value / renderedScale.value)
+      const remainingPixels = Math.abs(scale.value - renderedScale.value) * Math.max(natural.value.width, natural.value.height)
+      renderedScale.value = remainingPixels < .1 ? scale.value
+        : renderedScale.value * Math.exp(difference * (1 - Math.exp(-elapsed / 20)))
+      animation = renderedScale.value === scale.value ? undefined : requestAnimationFrame(frame)
+      return
+    }
     const progress = Math.max(0, Math.min(1, (time - animationStart) / 90))
     const eased = 1 - (1 - progress) ** 3
     renderedScale.value = progress === 1 ? scale.value
@@ -40,10 +55,19 @@ export function useImageZoom() {
     animation = progress === 1 ? undefined : requestAnimationFrame(frame)
   }
   watch(scale, value => {
-    stopAnimation()
     if (initializing || !natural.value.width || reducedMotion?.matches) {
+      stopAnimation()
       renderedScale.value = value
+    } else if (precisionInput) {
+      // Retarget one running loop instead of restarting easing for every pinch event.
+      if (animation !== undefined && precisionAnimation) return
+      stopAnimation()
+      precisionAnimation = true
+      previousFrameTime = performance.now()
+      animation = requestAnimationFrame(frame)
     } else {
+      stopAnimation()
+      precisionAnimation = false
       animationStart = performance.now()
       animationFrom = renderedScale.value
       animation = requestAnimationFrame(frame)
@@ -92,10 +116,19 @@ export function useImageZoom() {
     renderedScale.value = scale.value
     initializing = false
   }
-  function setScale(value: number, clientX?: number, clientY?: number) {
+  function setScale(value: number, clientX?: number, clientY?: number, precision = false) {
     if (!natural.value.width || !Number.isFinite(value)) return
     endPan()
-    setAnchor(clientX, clientY)
+    precisionInput = precision
+    const element = viewport.value
+    const rect = element?.getBoundingClientRect()
+    const samePivot = precision && performance.now() - lastPrecisionTime < 160 && anchor && element && rect
+      && clientX !== undefined && clientY !== undefined
+      && Math.abs(anchor.x - (clientX - rect.left - element.clientLeft)) < .5
+      && Math.abs(anchor.y - (clientY - rect.top - element.clientTop)) < .5
+    // Keep the gesture's original image point; repeated scroll rounding otherwise drifts.
+    if (!samePivot) setAnchor(clientX, clientY)
+    if (!precision) { lastPrecisionTime = -Infinity; precisionDirection = 0 }
     manualScale.value = Math.max(.01, Math.min(8, value))
     fit.value = false
   }
@@ -104,15 +137,26 @@ export function useImageZoom() {
     setScale(scale.value * (direction > 0 ? 1.35 : 1 / 1.35))
   }
   function wheel(event: WheelEvent) {
-    if (!event.ctrlKey || !event.deltaY) return
+    if (!event.ctrlKey) { anchor = undefined; lastPrecisionTime = -Infinity; return }
+    if (!Number.isFinite(event.deltaY) || !event.deltaY) return
     event.preventDefault()
     const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? bounds.value.height : 1)
-    setScale(scale.value * Math.exp(-Math.max(-120, Math.min(120, pixels)) * .004), event.clientX, event.clientY)
+    const now = performance.now()
+    const sameGesture = now - lastPrecisionTime < 160
+    // WheelEvent has no device identifier. Small pixel deltas identify high-resolution input.
+    const precision = event.deltaMode === 0 && (Math.abs(pixels) < 50 || sameGesture)
+    const direction = Math.sign(pixels)
+    const reversing = precision && sameGesture && precisionDirection !== direction
+    const base = reversing ? renderedScale.value : scale.value
+    const limit = precision ? 60 : 120
+    setScale(base * Math.exp(-Math.max(-limit, Math.min(limit, pixels)) * (precision ? .0025 : .004)), event.clientX, event.clientY, precision)
+    if (precision) { lastPrecisionTime = now; precisionDirection = direction }
   }
   function startPan(event: PointerEvent) {
     const element = viewport.value
     if (!element || !natural.value.width || !canPan.value || event.button !== 0 || drag) return
     stopAnimation()
+    precisionInput = false; lastPrecisionTime = -Infinity; precisionDirection = 0
     initializing = true
     manualScale.value = renderedScale.value; fit.value = false
     initializing = false
@@ -134,7 +178,10 @@ export function useImageZoom() {
     drag = undefined; dragging.value = false
     if (previous.element.hasPointerCapture?.(previous.pointerId)) previous.element.releasePointerCapture(previous.pointerId)
   }
-  function fitImage() { endPan(); anchor = undefined; fit.value = true; measure(); viewport.value?.scrollTo({ left: 0, top: 0 }) }
+  function fitImage() {
+    endPan(); anchor = undefined; precisionInput = false; lastPrecisionTime = -Infinity; precisionDirection = 0
+    fit.value = true; measure(); viewport.value?.scrollTo({ left: 0, top: 0 })
+  }
   function reset() {
     stopAnimation(); anchor = undefined; initializing = true
     natural.value = { width: 0, height: 0 }; manualScale.value = 1; fitImage(); renderedScale.value = scale.value

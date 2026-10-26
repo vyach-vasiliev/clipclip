@@ -187,6 +187,33 @@ async function run() {
     await evaluate('document.querySelector(".zoom-percent").click()')
     await delay(450)
     assert.equal(await evaluate('Math.round(document.querySelector(".zoom-image").getBoundingClientRect().width)'), 1600)
+    const pinch = await evaluate(`
+      const viewport = document.querySelector('.image-viewport');
+      const image = document.querySelector('.zoom-image');
+      const area = viewport.getBoundingClientRect();
+      const point = { x: area.left + viewport.clientWidth / 2, y: area.top + viewport.clientHeight / 2 };
+      const before = image.getBoundingClientRect();
+      const pivot = { x: (point.x - before.left) / before.width, y: (point.y - before.top) / before.height };
+      const samples = [];
+      for (let frame = 0; frame < 10; frame++) {
+        for (let event = 0; event < 4; event++) viewport.dispatchEvent(new WheelEvent('wheel', { ctrlKey: true, deltaY: -.75, deltaMode: 0, clientX: point.x, clientY: point.y, cancelable: true }));
+        await new Promise(requestAnimationFrame);
+        const rect = image.getBoundingClientRect();
+        samples.push({ width: rect.width, errorX: Math.abs(point.x - rect.left - pivot.x * rect.width), errorY: Math.abs(point.y - rect.top - pivot.y * rect.height) });
+      }
+      await new Promise(resolve => setTimeout(resolve, 250));
+      return { samples, finalWidth: image.getBoundingClientRect().width };
+    `)
+    let previousPinchWidth = 1600
+    for (const sample of pinch.samples) {
+      assert.ok(sample.width >= previousPinchWidth && sample.width / previousPinchWidth < 1.02, JSON.stringify(sample))
+      assert.ok(sample.errorX <= 1.5 && sample.errorY <= 1.5, JSON.stringify(sample))
+      previousPinchWidth = sample.width
+    }
+    assert.ok(Math.abs(pinch.finalWidth - 1600 * Math.exp(30 * .0025)) < .5)
+    assert.equal(window.webContents.getZoomFactor(), 1)
+    await evaluate('document.querySelector(".zoom-percent").click()')
+    await delay(150)
     await evaluate('document.querySelector(".image-viewport").scrollLeft = 100; document.querySelector(".image-viewport").scrollTop = 100')
     const viewportRect = await evaluate('document.querySelector(".image-viewport").getBoundingClientRect().toJSON()')
     const dragPoint = { x: Math.round(viewportRect.left + viewportRect.width / 2), y: Math.round(viewportRect.top + viewportRect.height / 2) }
