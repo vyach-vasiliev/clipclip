@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck, mdiFullscreen, mdiFullscreenExit, mdiPlus, mdiMinus, mdiFitToScreenOutline, mdiChevronLeft, mdiChevronRight, mdiAlertCircleOutline } from '@mdi/js'
-import { HISTORY_LIMIT, KIND_LABELS, TAG_LABELS, type ClipboardKind, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
+import { computed, ref, watch, nextTick, defineAsyncComponent, onMounted, onBeforeUnmount } from 'vue'
+import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck, mdiFullscreen, mdiFullscreenExit, mdiPlus, mdiMinus, mdiFitToScreenOutline, mdiChevronLeft, mdiChevronRight, mdiAlertCircleOutline, mdiCogOutline } from '@mdi/js'
+import { KIND_LABELS, TAG_LABELS, type ClipboardKind, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
 import { useBufferStore } from '../store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags, isEditingTarget, isActionTarget } from '../utils/history'
 import SearchPanel from './SearchPanel.vue'
@@ -15,7 +15,9 @@ import ColorConverter from './ColorConverter.vue'
 import FileLocations from './FileLocations.vue'
 import FileActions from './FileActions.vue'
 
+const SettingsDialog = defineAsyncComponent(() => import('./SettingsDialog.vue'))
 const buffer = useBufferStore()
+const settingsOpen = ref(false)
 const search = ref('')
 const selectedTags = ref<ClipboardTag[]>([])
 const selectedId = ref<string | null>(null)
@@ -179,6 +181,7 @@ async function copyPreview() {
   } else await copy(preview.value, true)
 }
 async function prepareQuickPick() {
+  settingsOpen.value = false
   colorItem.value = null
   fileAction.value = null
   if (!await editor.flush()) { previewDialog.value?.showModal(); return }
@@ -216,7 +219,7 @@ async function move(direction: number) {
   }
 }
 function capturePreviewKeys(event: KeyboardEvent) {
-  if (colorItem.value || fileAction.value) return
+  if (settingsOpen.value || colorItem.value || fileAction.value) return
   if (previewOpen.value && !event.isComposing && (event.key === 'Escape'
     || (!editing.value && !isEditingTarget(event.target) && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')))) {
     event.stopImmediatePropagation()
@@ -224,10 +227,10 @@ function capturePreviewKeys(event: KeyboardEvent) {
   }
 }
 function focusSearchOnActivation() {
-  if (!previewOpen.value && !colorItem.value && !fileAction.value) searchPanel.value?.focus()
+  if (!settingsOpen.value && !previewOpen.value && !colorItem.value && !fileAction.value) searchPanel.value?.focus()
 }
 function captureSearchTyping(event: KeyboardEvent) {
-  if (previewOpen.value || colorItem.value || fileAction.value || event.defaultPrevented || isEditingTarget(event.target)) return
+  if (settingsOpen.value || previewOpen.value || colorItem.value || fileAction.value || event.defaultPrevented || isEditingTarget(event.target)) return
   const altGraph = event.getModifierState('AltGraph')
   if ((event.ctrlKey || event.metaKey) && !event.altKey
     && (event.code === 'KeyV' || event.key.toLowerCase() === 'v')) {
@@ -242,7 +245,7 @@ function captureSearchTyping(event: KeyboardEvent) {
   searchPanel.value?.insertText(event.key)
 }
 function captureSearchPaste(event: ClipboardEvent) {
-  if (previewOpen.value || colorItem.value || fileAction.value || event.defaultPrevented || isEditingTarget(event.target)) return
+  if (settingsOpen.value || previewOpen.value || colorItem.value || fileAction.value || event.defaultPrevented || isEditingTarget(event.target)) return
   const text = event.clipboardData?.getData('text/plain')
   if (!text) return
   event.preventDefault()
@@ -250,7 +253,7 @@ function captureSearchPaste(event: ClipboardEvent) {
   searchPanel.value?.insertText(text)
 }
 function handleKeydown(event: KeyboardEvent) {
-  if (colorItem.value || fileAction.value) return
+  if (settingsOpen.value || colorItem.value || fileAction.value) return
   if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return
   const editing = isEditingTarget(event.target)
   const otherAction = isActionTarget(event.target)
@@ -301,7 +304,7 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="history-page flex h-full min-h-0 w-full flex-col gap-2.5 px-3.5 pt-2 pb-2.5">
-    <header class="flex shrink-0 items-center gap-2 select-none" :class="{ 'window-drag': !previewOpen && !colorItem && !fileAction }">
+    <header class="flex shrink-0 items-center gap-2 select-none" :class="{ 'window-drag': !settingsOpen && !previewOpen && !colorItem && !fileAction }">
       <div class="mr-auto flex items-center gap-2"><AppIcon :path="mdiClipboardTextOutline" class="size-6 text-accent" /><h1 class="text-[17px] font-semibold tracking-tight">ClipClip</h1></div>
       <span class="flex items-center gap-1.5 text-xs text-muted" :title="buffer.persistent ? 'История сохраняется с шифрованием' : 'История только в памяти этой сессии'">
         <span class="size-1.5 rounded-full" :class="buffer.paused ? 'bg-amber-500' : 'bg-emerald-600 dark:bg-emerald-400'" />{{ buffer.paused ? 'Пауза' : 'Запись' }}
@@ -309,6 +312,7 @@ onBeforeUnmount(() => {
       <button type="button" class="icon-button" :disabled="buffer.busy || buffer.loading"
         :title="buffer.paused ? 'Продолжить запись' : 'Приостановить запись'" :aria-label="buffer.paused ? 'Продолжить запись' : 'Приостановить запись'"
         @click="buffer.setPaused(!buffer.paused)"><AppIcon :path="buffer.paused ? mdiPlay : mdiPause" /></button>
+      <button type="button" class="settings-button icon-button" aria-label="Настройки" title="Настройки" aria-haspopup="dialog" @click="settingsOpen = true"><AppIcon :path="mdiCogOutline" /></button>
       <button type="button" class="hide-window icon-button" aria-label="Скрыть окно" title="Скрыть окно (Esc)" @click="buffer.hide"><AppIcon :path="mdiClose" /></button>
     </header>
 
@@ -322,7 +326,7 @@ onBeforeUnmount(() => {
     <section class="history-section flex min-h-0 flex-1 flex-col" aria-labelledby="history-title" :aria-busy="buffer.loading">
       <div class="flex shrink-0 items-center justify-between pb-2">
         <h2 id="history-title" class="text-xs font-medium text-muted">{{ search || selectedTags.length ? 'Результаты поиска' : 'Последние записи' }}</h2>
-        <span class="text-xs text-muted tabular-nums">{{ filtered.length }} / {{ HISTORY_LIMIT }}</span>
+        <span class="text-xs text-muted tabular-nums">{{ filtered.length }} / {{ buffer.historyLimit }}</span>
       </div>
       <div v-if="buffer.loading" role="status" class="rounded-lg bg-accent/8 px-3 py-4 text-center text-xs text-muted">Загрузка истории…</div>
       <div v-else-if="!filtered.length" class="empty-state my-auto px-3 py-6 text-center text-muted">
@@ -438,6 +442,7 @@ onBeforeUnmount(() => {
         <AppIcon :path="mdiContentCopy" />{{ saving ? 'Сохраняется…' : copyingId !== null ? 'Копируется…' : 'Копировать и скрыть' }}
       </button>
     </dialog>
+    <SettingsDialog v-if="settingsOpen" @close="settingsOpen = false" />
     <ColorConverter v-if="colorItem" :id="colorItem.id" :text="colorItem.data" @close="colorItem = null" @copied="colorCopied" />
     <FileActions v-if="fileAction" :item="fileAction.item" :index="fileAction.index" @close="fileAction = null" @copied="pathCopied" />
   </main>

@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import {
-  HISTORY_LIMIT, MAX_HISTORY_BYTES, MAX_ITEM_BYTES, UNKNOWN_SOURCE, isHistoryItem, isFileUriList, KIND_LABELS,
+  HISTORY_LIMIT, MAX_HISTORY_BYTES, MAX_ITEM_BYTES, UNKNOWN_SOURCE, isHistoryItem, isFileUriList, isHistoryLimit, KIND_LABELS,
   type ClipboardHistoryItem, type ClipboardSnapshot, type ClipboardSource, type ClipboardKind, type FileKind,
 } from '../../shared/clipboard'
 import { classifyText } from '../../shared/content'
@@ -20,6 +20,7 @@ interface HistoryDependencies {
 export class ClipboardHistory {
   items: ClipboardHistoryItem[] = []
   paused = false
+  historyLimit = HISTORY_LIMIT
   error: string | null = null
   private busy = false
   private epoch = 0
@@ -39,7 +40,8 @@ export class ClipboardHistory {
 
   private notify() { this.listeners.forEach(listener => listener()) }
 
-  hydrate(items: unknown[], paused = false) {
+  hydrate(items: unknown[], paused = false, historyLimit: unknown = HISTORY_LIMIT) {
+    this.historyLimit = isHistoryLimit(historyLimit) ? historyLimit : HISTORY_LIMIT
     const ids = new Set<string>()
     this.items = items.filter(isHistoryItem).filter(item => {
       if (ids.has(item.id)) return false
@@ -63,7 +65,15 @@ export class ClipboardHistory {
       if (size > MAX_ITEM_BYTES || bytes + size > MAX_HISTORY_BYTES) return false
       bytes += size
       return true
-    }).slice(0, HISTORY_LIMIT)
+    }).slice(0, this.historyLimit)
+  }
+
+  setHistoryLimit(limit: unknown) {
+    if (!isHistoryLimit(limit)) throw new Error('Некорректный лимит истории.')
+    if (this.historyLimit === limit) return
+    this.historyLimit = limit
+    this.trim()
+    this.notify()
   }
 
   private fingerprints(snapshot: ClipboardSnapshot) {

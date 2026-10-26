@@ -108,7 +108,7 @@ const history = new ClipboardHistory({ read: readSnapshot, source: getSource,
 const monitor = new ClipboardMonitor(history)
 
 function state(): HistoryState {
-  return { revision, items: history.items, paused: history.paused, canUndo: history.canUndo,
+  return { revision, items: history.items, historyLimit: history.historyLimit, paused: history.paused, canUndo: history.canUndo,
     persistent, shortcutAvailable, error: storageError ?? history.error }
 }
 
@@ -234,6 +234,7 @@ function registerIpc() {
     return history.saveTextRevision(id, text)
   })
   handle(CHANNELS.undoDelete, () => history.undoDelete())
+  handle(CHANNELS.setHistoryLimit, value => history.setHistoryLimit(value))
   handle(CHANNELS.setPaused, value => {
     if (typeof value !== 'boolean') throw new Error('Некорректное состояние записи.')
     history.setPaused(value)
@@ -347,7 +348,7 @@ async function initialize() {
         decrypt: async value => useAsyncEncryption ? (await safeStorage.decryptStringAsync(value)).result : safeStorage.decryptString(value),
       })
       const restored = await storage.load()
-      history.hydrate(restored.items, restored.paused)
+      history.hydrate(restored.items, restored.paused, restored.historyLimit)
       persistent = true
     }
   } catch {
@@ -358,7 +359,7 @@ async function initialize() {
   history.subscribe(() => {
     broadcast()
     updateTray()
-    if (storage) void storage.save({ items: history.items, paused: history.paused }).catch(() => {
+    if (storage) void storage.save({ items: history.items, paused: history.paused, historyLimit: history.historyLimit }).catch(() => {
       persistent = false
       storageError = 'Не удалось сохранить историю. Данные этой сессии остаются в памяти.'
       broadcast()

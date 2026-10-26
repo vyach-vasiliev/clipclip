@@ -1,12 +1,14 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { ClipboardHistoryItem, FileCheckResult, HistoryState } from '../../shared/clipboard'
+import { HISTORY_LIMIT } from '../../shared/clipboard'
 import type { ColorFormat } from '../../shared/colors'
 
 export const useBufferStore = defineStore('buffer', () => {
   const clipboardHistory = ref<ClipboardHistoryItem[]>([])
   const loading = ref(true)
   const paused = ref(false)
+  const historyLimit = ref(HISTORY_LIMIT)
   const persistent = ref(false)
   const shortcutAvailable = ref(true)
   const canUndo = ref(false)
@@ -22,6 +24,7 @@ export const useBufferStore = defineStore('buffer', () => {
     revision = state.revision
     clipboardHistory.value = state.items
     paused.value = state.paused
+    historyLimit.value = state.historyLimit
     persistent.value = state.persistent
     shortcutAvailable.value = state.shortcutAvailable
     canUndo.value = state.canUndo
@@ -101,11 +104,14 @@ export const useBufferStore = defineStore('buffer', () => {
     () => window.electronAPI!.setPaused(value), 'Не удалось изменить состояние записи.',
   )
   const hide = () => action(() => window.electronAPI!.hideWindow(), 'Не удалось скрыть окно.')
+  const setHistoryLimit = (value: number) => action(
+    () => window.electronAPI!.setHistoryLimit(value), 'Не удалось изменить лимит истории.',
+  )
   const saveRevision = (id: string, text: string) => window.electronAPI!.saveTextRevision(id, text)
   const setFullscreen = (value: boolean) => action(
     () => window.electronAPI!.setPreviewFullscreen(value), 'Не удалось переключить полноэкранный режим.',
   )
 
-  return { clipboardHistory, loading, paused, persistent, shortcutAvailable, canUndo, error,
-    busy, connect, disconnect, copy, copyColor, revealFile, copyFilePath, remove, undo, setPaused, hide, saveRevision, setFullscreen }
+  return { clipboardHistory, loading, paused, historyLimit, persistent, shortcutAvailable, canUndo, error,
+    busy, connect, disconnect, copy, copyColor, revealFile, copyFilePath, remove, undo, setPaused, setHistoryLimit, hide, saveRevision, setFullscreen }
 })

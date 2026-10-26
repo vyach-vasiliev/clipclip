@@ -52,6 +52,7 @@ export interface ClipboardSnapshot {
 export interface HistoryState {
   revision: number
   items: ClipboardHistoryItem[]
+  historyLimit: number
   paused: boolean
   canUndo: boolean
   persistent: boolean
@@ -71,6 +72,7 @@ export interface ElectronAPI {
   deleteItem(id: string): Promise<void>
   undoDelete(): Promise<void>
   setPaused(paused: boolean): Promise<void>
+  setHistoryLimit(limit: number): Promise<void>
   hideWindow(): Promise<void>
   setPreviewFullscreen(fullscreen: boolean): Promise<void>
   onPreviewFullscreenChanged(callback: (fullscreen: boolean) => void): () => void
@@ -89,13 +91,18 @@ export const CHANNELS = {
   deleteItem: 'history:delete',
   undoDelete: 'history:undo',
   setPaused: 'history:pause',
+  setHistoryLimit: 'history:set-limit',
   hideWindow: 'window:hide',
   windowShown: 'window:shown',
   setPreviewFullscreen: 'window:preview-fullscreen',
   previewFullscreenChanged: 'window:preview-fullscreen-changed',
 } as const
 
-export const HISTORY_LIMIT = 10
+export const HISTORY_LIMIT = 100
+export const MAX_HISTORY_LIMIT = 10_000
+export function isHistoryLimit(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_HISTORY_LIMIT
+}
 export const MAX_ITEM_BYTES = 8 * 1024 * 1024
 export const MAX_HISTORY_BYTES = 32 * 1024 * 1024
 

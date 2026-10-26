@@ -19,6 +19,7 @@ const api: ElectronAPI = {
   deleteItem: id => ipcRenderer.invoke(CHANNELS.deleteItem, id),
   undoDelete: () => ipcRenderer.invoke(CHANNELS.undoDelete),
   setPaused: paused => ipcRenderer.invoke(CHANNELS.setPaused, paused),
+  setHistoryLimit: limit => ipcRenderer.invoke(CHANNELS.setHistoryLimit, limit),
   hideWindow: () => ipcRenderer.invoke(CHANNELS.hideWindow),
   setPreviewFullscreen: fullscreen => ipcRenderer.invoke(CHANNELS.setPreviewFullscreen, fullscreen),
   onPreviewFullscreenChanged: callback => subscribe<boolean>(CHANNELS.previewFullscreenChanged, callback),

@@ -31,6 +31,11 @@ describe('encrypted persistence', () => {
     expect((await readFile(file)).toString()).not.toContain('paused')
     expect(await storage.load()).toEqual({ items: [], paused: true })
   })
+  it('persists the selected cap with encrypted history', async () => {
+    const { storage } = await setup()
+    await storage.save({ items: [], paused: false, historyLimit: 250 })
+    expect(await storage.load()).toEqual({ items: [], paused: false, historyLimit: 250 })
+  })
   it('serializes rapid updates so older saves cannot overwrite newer ones', async () => {
     const { storage } = await setup()
     await Promise.all([storage.save({ items: [], paused: false }), storage.save({ items: [], paused: true })])

@@ -50,6 +50,10 @@
   .preview-dialog.is-fullscreen { @apply fixed inset-0 m-0 h-dvh w-screen max-h-none max-w-none overflow-hidden rounded-none border-0; }
   .preview-dialog .preview-content { @apply flex-1; }
   .preview-dialog::backdrop { background: var(--canvas); }
+  .license-link { @apply flex min-h-10 cursor-pointer items-center py-2 text-xs leading-relaxed text-accent underline decoration-dashed underline-offset-4 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent; }
+  .license-link::marker { content: ''; }
+  .license-disclosure[open] > .license-link { @apply font-semibold; }
+  .license-text { @apply my-2 max-h-64 overflow-auto rounded-lg border border-line bg-canvas p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap wrap-anywhere; }
   .clipboard-record:focus-within {
     outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
     outline-offset: -1px;

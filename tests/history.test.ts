@@ -14,6 +14,48 @@ function setup(snapshot: ClipboardSnapshot = { text: 'hello', image: null }) {
 afterEach(() => { active.splice(0).forEach(history => history.dispose()); vi.useRealTimers() })
 
 describe('clipboard history', () => {
+  it('defaults to 100, applies a new cap immediately and uses it for captures, edits and undo', async () => {
+    const { history, setSnapshot } = setup()
+    expect(history.historyLimit).toBe(100)
+    for (let index = 0; index < 105; index++) {
+      setSnapshot({ text: 'entry ' + index, image: null })
+      await history.capture()
+    }
+    expect(history.items).toHaveLength(100)
+    const notify = vi.fn()
+    history.subscribe(notify)
+    history.setHistoryLimit(2)
+    expect(history.items.map(item => item.data)).toEqual(['entry 104', 'entry 103'])
+    expect(notify).toHaveBeenCalledOnce()
+    history.setHistoryLimit(2)
+    expect(notify).toHaveBeenCalledOnce()
+    history.delete(history.items[1].id)
+    setSnapshot({ text: 'latest', image: null }); await history.capture()
+    history.undoDelete()
+    expect(history.items).toHaveLength(2)
+    history.saveTextRevision(history.items[0].id, 'edited')
+    expect(history.items).toHaveLength(2)
+    history.setHistoryLimit(4)
+    setSnapshot({ text: 'new', image: null }); await history.capture()
+    expect(history.items).toHaveLength(3)
+  })
+  it('validates caps and restores legacy or invalid settings with the default', () => {
+    const { history } = setup()
+    for (const limit of [0, -1, 1.5, 10_001, NaN, Infinity, '10', null, undefined]) {
+      expect(() => history.setHistoryLimit(limit)).toThrow('лимит')
+      history.hydrate([], false, limit)
+      expect(history.historyLimit).toBe(100)
+    }
+    history.hydrate([], true, 250)
+    expect(history.historyLimit).toBe(250)
+    expect(history.paused).toBe(true)
+    history.hydrate([])
+    expect(history.historyLimit).toBe(100)
+    history.setHistoryLimit(1)
+    expect(history.historyLimit).toBe(1)
+    history.setHistoryLimit(10_000)
+    expect(history.historyLimit).toBe(10_000)
+  })
   it('records copied paths as text, separately from the file, including after reload and recapture', async () => {
     const { history } = setup({ text: '', image: null, fileUris: ['file:///C:/Docs/report.pdf'] })
     await history.capture()
@@ -182,10 +224,10 @@ describe('clipboard history', () => {
     const { history } = setup()
     await history.capture()
     let id = history.items[0].id
-    for (let index = 0; index < 20; index++) id = history.saveTextRevision(id, 'edit ' + index).id
+    for (let index = 0; index < HISTORY_LIMIT + 10; index++) id = history.saveTextRevision(id, 'edit ' + index).id
     expect(history.items).toHaveLength(HISTORY_LIMIT)
     expect(() => history.saveTextRevision(id, 'x'.repeat(MAX_ITEM_BYTES + 1))).toThrow()
-    expect(history.items[0].data).toBe('edit 19')
+    expect(history.items[0].data).toBe('edit ' + (HISTORY_LIMIT + 9))
   })
   it('captures text and image once for an unchanged snapshot', async () => {
     const { history } = setup({ text: 'hello', image })
@@ -194,7 +236,7 @@ describe('clipboard history', () => {
   })
   it('ignores an empty image payload and still enforces the history limit', async () => {
     const { history, setSnapshot } = setup()
-    for (let index = 0; index < 14; index++) {
+    for (let index = 0; index < HISTORY_LIMIT + 4; index++) {
       setSnapshot({ text: 'text-' + index, image: { ...image, data: 'data:image/png;base64,' } })
       await history.capture()
     }
@@ -286,7 +328,7 @@ describe('clipboard history', () => {
   })
   it('rejects invalid saved records and enforces the cap on restore', async () => {
     const { history, setSnapshot } = setup()
-    for (let index = 0; index < 12; index++) { setSnapshot({ text: String(index), image: null }); await history.capture() }
+    for (let index = 0; index < HISTORY_LIMIT + 2; index++) { setSnapshot({ text: String(index), image: null }); await history.capture() }
     const items = [...history.items, { id: 'bad', data: '<invalid>' }, ...history.items]
     history.hydrate(items)
     expect(history.items).toHaveLength(HISTORY_LIMIT)

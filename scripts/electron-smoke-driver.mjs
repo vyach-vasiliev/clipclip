@@ -62,7 +62,7 @@ async function run() {
     const capabilities = await evaluate('({api: Object.keys(window.electronAPI), genericIPC: typeof window.ipcRenderer, records: document.querySelectorAll(".record-select").length})')
     assert.equal(capabilities.genericIPC, 'undefined')
     assert.equal(capabilities.records, 2)
-    assert.deepEqual(capabilities.api.sort(), ['copyItem', 'copyColor', 'checkFiles', 'revealFile', 'copyFilePath', 'saveTextRevision', 'deleteItem', 'getHistory', 'hideWindow', 'setPreviewFullscreen', 'onPreviewFullscreenChanged', 'onHistoryChanged', 'onWindowShown', 'setPaused', 'undoDelete'].sort())
+    assert.deepEqual(capabilities.api.sort(), ['copyItem', 'copyColor', 'checkFiles', 'revealFile', 'copyFilePath', 'saveTextRevision', 'deleteItem', 'getHistory', 'hideWindow', 'setPreviewFullscreen', 'onPreviewFullscreenChanged', 'onHistoryChanged', 'onWindowShown', 'setPaused', 'setHistoryLimit', 'undoDelete'].sort())
     assert.equal(window.webContents.isDevToolsOpened(), false)
     window.show()
     window.focus()
@@ -81,6 +81,50 @@ async function run() {
     await delay(50)
     assert.equal(await evaluate('document.querySelector("input").value'), '')
     assert.equal(window.isVisible(), true)
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).historyLimit'), 100)
+    for (const invalid of ['0', '1.5', '10001', '"100"', 'null']) {
+      assert.equal(await evaluate(`window.electronAPI.setHistoryLimit(${invalid}).then(()=>false,()=>true)`), true)
+    }
+    await evaluate('document.querySelector(".settings-button").click()')
+    await delay(100)
+    assert.equal(await evaluate('document.querySelector(".settings-dialog").open'), true)
+    assert.equal(await evaluate('document.querySelector("#history-limit").value'), '100')
+    await screenshot(window, 'settings-general.png')
+    await evaluate('document.querySelector("#history-limit").value="250"; document.querySelector("#history-limit").dispatchEvent(new Event("input",{bubbles:true}));')
+    await delay(750)
+    assert.equal(await evaluate('Boolean(document.querySelector(".settings-dialog button[type=submit]"))'), false)
+    assert.ok(await evaluate('document.querySelector(".settings-notice").textContent.includes("Изменения применены")'))
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).historyLimit'), 250)
+    await evaluate('document.querySelector("#settings-about-tab").click()')
+    await delay(50)
+    assert.equal(await evaluate('document.querySelector("#settings-about-tab").getAttribute("aria-selected")'), 'true')
+    assert.equal(await evaluate('document.querySelector("#settings-about-tab").textContent.trim()'), 'О программе')
+    assert.ok(await evaluate('document.querySelector("#settings-about").textContent.includes("Vasilev Viacheslav")'))
+    await screenshot(window, 'settings-about-light.png')
+    await evaluate('document.querySelector(".license-link").click()')
+    assert.equal(await evaluate('document.querySelector(".license-disclosure").open'), true)
+    assert.equal(await evaluate('getComputedStyle(document.querySelector(".license-link")).textDecorationStyle'), 'dashed')
+    await evaluate('document.querySelector(".license-disclosure").scrollIntoView({block:"start"})')
+    await delay(50)
+    assert.ok(await evaluate('document.querySelector(".license-disclosure .license-text").textContent.includes("Copyright (c) 2026 Vasilev Viacheslav")'))
+    await screenshot(window, 'settings-license.png')
+    await evaluate('document.querySelector(".electron-notices").open=true')
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if (await evaluate('Boolean(document.querySelector(".electron-notices .license-text"))')) break
+      await delay(50)
+    }
+    assert.ok(await evaluate('document.querySelector(".electron-notices .license-text")?.textContent.includes("Copyright")'))
+    assert.equal(await evaluate('document.querySelectorAll(".settings-dialog iframe, .settings-dialog script").length'), 0)
+    await evaluate('document.querySelector(".electron-notices").open=false; document.querySelector(".license-disclosure").open=false; document.querySelector("#settings-about").scrollTop=0;')
+    nativeTheme.themeSource = 'dark'
+    await delay(100)
+    await screenshot(window, 'settings-about-dark.png')
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+    await delay(50)
+    assert.equal(await evaluate('Boolean(document.querySelector(".settings-dialog"))'), false)
+    assert.equal(window.isVisible(), true)
+    await evaluate('window.electronAPI.setHistoryLimit(100)')
     if (process.platform === 'win32' && process.env.CLIPCLIP_TEST_SHORTCUT === '1') {
       assert.equal(await evaluate('(await window.electronAPI.getHistory()).shortcutAvailable'), true)
       await checkWindowsShortcut(window)
@@ -306,6 +350,8 @@ async function run() {
     await screenshot(window, 'preview-tag-search.png')
     await evaluate('document.querySelector(".filter-row .tag-badge").click()')
     await delay(50)
+
+    await evaluate('window.electronAPI.setHistoryLimit(10)')
 
     // Fill the compact list without reading or changing the system clipboard.
     for (let record = 0; record < 8; record++) {

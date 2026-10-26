@@ -19,7 +19,7 @@ const item = (id: string, data = 'fixture [ bracket.\nsecond line'): ClipboardHi
     tags: [{ code: 'source', value: 'Fixture: app' }, { code: 'type', value: 'Текст' }] },
 })
 const state = (items = [item('first')], revision = 1): HistoryState => ({
-  revision, items, paused: false, persistent: true, canUndo: false, shortcutAvailable: true, error: null,
+  revision, items, historyLimit: 100, paused: false, persistent: true, canUndo: false, shortcutAvailable: true, error: null,
 })
 async function setup(items?: ClipboardHistoryItem[]) {
   const api: ElectronAPI = {
@@ -46,6 +46,7 @@ async function setup(items?: ClipboardHistoryItem[]) {
     deleteItem: vi.fn(async () => {}), undoDelete: vi.fn(async () => {}),
     checkFiles: vi.fn(async () => ({ status: 'available' as const, message: 'Все файлы и папки доступны.' })),
     saveTextRevision: vi.fn(async (_id, text) => item('edited', text)),
+    setHistoryLimit: vi.fn(async limit => { emitState({ ...state(items, 2), historyLimit: limit }) }),
     setPaused: vi.fn(async () => {}), hideWindow: vi.fn(async () => {}),
     setPreviewFullscreen: vi.fn(async () => {}), onPreviewFullscreenChanged: vi.fn(() => vi.fn()),
   }
@@ -71,7 +72,111 @@ beforeEach(() => {
   HTMLDialogElement.prototype.close = vi.fn()
   HTMLDialogElement.prototype.showModal = vi.fn()
 })
-afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); document.body.innerHTML = ''; delete window.electronAPI; vi.unstubAllGlobals() })
+afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); document.body.innerHTML = ''; delete window.electronAPI; vi.useRealTimers(); vi.unstubAllGlobals() })
+
+describe('settings', () => {
+  it('automatically applies the completed input and rejects invalid limits without a save button', async () => {
+    const { wrapper, api, buffer } = await setup()
+    await wrapper.get('.settings-button').trigger('click')
+    await vi.dynamicImportSettled()
+    await flushPromises()
+    vi.useFakeTimers()
+    const input = wrapper.get('#history-limit')
+    expect((input.element as HTMLInputElement).value).toBe('100')
+    expect(wrapper.find('button[type="submit"]').exists()).toBe(false)
+    expect(wrapper.get('.settings-notice').text()).toContain('Настройки применяются автоматически')
+    for (const value of ['2', '25', '250']) {
+      (input.element as HTMLInputElement).value = value
+      await input.trigger('input')
+      await vi.advanceTimersByTimeAsync(200)
+      expect(api.setHistoryLimit).not.toHaveBeenCalled()
+    }
+    await vi.advanceTimersByTimeAsync(400)
+    await flushPromises()
+    expect(api.setHistoryLimit).toHaveBeenCalledExactlyOnceWith(250)
+    expect(buffer.historyLimit).toBe(250)
+    expect(wrapper.get('.settings-notice').text()).toContain('Изменения применены')
+    await input.trigger('keydown', { key: 'Enter' })
+    expect(api.copyItem).not.toHaveBeenCalled()
+    for (const value of ['', '0', '1.5', '10001']) {
+      await input.setValue(value)
+      await vi.advanceTimersByTimeAsync(600)
+      expect(input.attributes('aria-invalid')).toBe('true')
+    }
+    expect(api.setHistoryLimit).toHaveBeenCalledTimes(1)
+    await wrapper.get('.settings-dialog').trigger('keydown', { key: 'Escape' })
+    expect(api.hideWindow).not.toHaveBeenCalled()
+    await wrapper.get('.settings-dialog').trigger('cancel')
+    await flushPromises()
+    expect(wrapper.find('.settings-dialog').exists()).toBe(false)
+  })
+  it('flushes a pending limit when settings close before the delay', async () => {
+    const { wrapper, api, buffer } = await setup()
+    await wrapper.get('.settings-button').trigger('click')
+    await vi.dynamicImportSettled()
+    const input = wrapper.get('#history-limit')
+    ;(input.element as HTMLInputElement).value = '500'
+    await input.trigger('input')
+    await wrapper.get('[aria-label="Закрыть настройки"]').trigger('click')
+    await flushPromises()
+    expect(api.setHistoryLimit).toHaveBeenCalledExactlyOnceWith(500)
+    expect(buffer.historyLimit).toBe(500)
+    expect(wrapper.find('.settings-dialog').exists()).toBe(false)
+  })
+  it('shows an automatic apply failure at the top and permits a retry', async () => {
+    const { wrapper, api, buffer } = await setup()
+    await wrapper.get('.settings-button').trigger('click')
+    await vi.dynamicImportSettled()
+    vi.mocked(api.setHistoryLimit).mockRejectedValueOnce(new Error('fixture failure'))
+    await wrapper.get('#history-limit').setValue('300')
+    await flushPromises()
+    expect(buffer.historyLimit).toBe(100)
+    expect(wrapper.get('.settings-notice [role="alert"]').text()).toContain('Не удалось изменить лимит истории')
+    await wrapper.get('#history-limit').trigger('blur')
+    await flushPromises()
+    expect(buffer.historyLimit).toBe(300)
+    expect(wrapper.get('.settings-notice').text()).toContain('Изменения применены')
+  })
+  it('keeps the latest input when an earlier automatic apply is still running', async () => {
+    const { wrapper, api, buffer } = await setup()
+    await wrapper.get('.settings-button').trigger('click')
+    await vi.dynamicImportSettled()
+    let complete!: () => void
+    vi.mocked(api.setHistoryLimit).mockImplementationOnce(limit => new Promise(resolve => {
+      complete = () => { emitState({ ...state(undefined, 2), historyLimit: limit }); resolve() }
+    }))
+    await wrapper.get('#history-limit').setValue('200')
+    await wrapper.get('#history-limit').setValue('300')
+    expect(api.setHistoryLimit).toHaveBeenCalledTimes(1)
+    complete()
+    await flushPromises()
+    expect(vi.mocked(api.setHistoryLimit).mock.calls.map(call => call[0])).toEqual([200, 300])
+    expect(buffer.historyLimit).toBe(300)
+    expect((wrapper.get('#history-limit').element as HTMLInputElement).value).toBe('300')
+  })
+  it('shows about metadata and full licenses in native disclosures, with keyboard tabs', async () => {
+    const { wrapper, api } = await setup()
+    await wrapper.get('.settings-button').trigger('click')
+    await vi.dynamicImportSettled()
+    await flushPromises()
+    await wrapper.get('#settings-general-tab').trigger('keydown', { key: 'ArrowRight' })
+    expect(wrapper.get('#settings-about-tab').attributes('aria-selected')).toBe('true')
+    expect(document.activeElement?.id).toBe('settings-about-tab')
+    const about = wrapper.get('#settings-about')
+    expect(about.text()).toContain('28.1.0')
+    expect(about.text()).toContain('Vasilev Viacheslav')
+    expect(wrapper.get('#settings-about-tab').text()).toBe('О программе')
+    expect(about.get('.license-text').text()).toContain('Copyright (c) 2026 Vasilev Viacheslav')
+    expect(about.get('.license-text').text()).not.toContain('草鞋没号')
+    expect(about.findAll('.license-disclosure').length).toBeGreaterThan(10)
+    expect(about.get('.license-disclosure').attributes('open')).toBeUndefined()
+    expect(about.get('.license-text').text()).toContain('Permission is hereby granted')
+    expect(about.findAll('a')).toHaveLength(0)
+    await wrapper.get('#settings-about-tab').trigger('keydown', { key: 'Home' })
+    expect(wrapper.get('#settings-general-tab').attributes('aria-selected')).toBe('true')
+    expect(api.copyItem).not.toHaveBeenCalled()
+  })
+})
 
 describe('color conversion', () => {
   it('adds a converted color, closes conversion, selects the result and keeps the app open', async () => {

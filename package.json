@@ -3,7 +3,7 @@
   "version": "28.1.0",
   "main": "dist-electron/main/index.js",
   "description": "Really simple clipboard history manager.",
-  "author": "Viacheslav Vasilev",
+  "author": "Vasilev Viacheslav",
   "license": "MIT",
   "private": true,
   "type": "module",

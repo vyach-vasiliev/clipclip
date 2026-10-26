@@ -3,12 +3,15 @@ import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 import electron from 'vite-plugin-electron/simple'
 import pkg from './package.json' with { type: 'json' }
+import { fileURLToPath } from 'node:url'
+import { licensePlugin } from './build/licenses.ts'
 
 export default defineConfig(({ command }) => ({
   base: './',
   plugins: [
     vue(),
     tailwindcss(),
+    licensePlugin(fileURLToPath(new URL('.', import.meta.url))),
     electron({
       main: {
         entry: 'electron/main/index.ts',
