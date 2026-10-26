@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto'
 import {
   HISTORY_LIMIT, MAX_HISTORY_BYTES, MAX_ITEM_BYTES, UNKNOWN_SOURCE, isHistoryItem, isFileUriList, KIND_LABELS,
-  type ClipboardHistoryItem, type ClipboardSnapshot, type ClipboardSource, type ClipboardKind,
+  type ClipboardHistoryItem, type ClipboardSnapshot, type ClipboardSource, type ClipboardKind, type FileKind,
 } from '../../shared/clipboard'
-import { classifyText, isDocumentFile } from '../../shared/content'
+import { classifyText } from '../../shared/content'
+import { parseColor } from '../../shared/colors'
+import { filePathLabel, fileSummary } from '../../shared/files'
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 const byteLength = (item: ClipboardHistoryItem) => Buffer.byteLength(item.data, 'utf8') + (item.fileUris ? Buffer.byteLength(JSON.stringify(item.fileUris), 'utf8') : 0)
@@ -12,6 +14,7 @@ interface HistoryDependencies {
   read: () => ClipboardSnapshot | Promise<ClipboardSnapshot>
   source: () => Promise<ClipboardSource>
   now?: () => number
+  fileKinds?: (uris: string[]) => Promise<FileKind[]>
 }
 
 export class ClipboardHistory {
@@ -43,9 +46,11 @@ export class ClipboardHistory {
       ids.add(item.id)
       return true
     }).map(item => {
-      const type = item.type === 'image' || item.fileUris ? item.type : classifyText(item.data, item.params.source)
-      return { ...item, type, params: { ...item.params, type,
-        tags: item.params.tags.map(tag => tag.code === 'type' ? { ...tag, value: KIND_LABELS[type] } : tag) } }
+      const type = item.fileUris ? 'file' : item.type === 'image' ? item.type : item.textOrigin === 'file-path' ? 'text' : classifyText(item.data, item.params.source)
+      const size = item.fileUris ? fileSummary(item.fileKinds ?? item.fileUris.map(() => 'unknown')) : item.params.size
+      return { ...item, type, params: { ...item.params, type, size,
+        tags: item.params.tags.map(tag => tag.code === 'type' ? { ...tag, value: KIND_LABELS[type] }
+          : tag.code === 'size' ? { ...tag, value: size } : tag) } }
     })
     this.paused = paused
     this.trim()
@@ -71,13 +76,20 @@ export class ClipboardHistory {
     this.previous = this.fingerprints(snapshot)
   }
 
-  private add(type: ClipboardKind, data: string, size: string, source: ClipboardSource, fileUris?: string[]): ClipboardHistoryItem {
+  private add(type: ClipboardKind, data: string, size: string, source: ClipboardSource, fileUris?: string[], fileKinds?: FileKind[]): ClipboardHistoryItem {
     const existing = this.items.find(item => (item.type === 'image') === (type === 'image')
       && item.data === data && JSON.stringify(item.fileUris) === JSON.stringify(fileUris))
     this.items = this.items.filter(item => item !== existing)
+    if (fileUris) {
+      fileKinds = fileUris.map((_, index) => fileKinds?.[index] === 'unknown'
+        ? existing?.fileKinds?.[index] ?? 'unknown' : fileKinds?.[index] ?? existing?.fileKinds?.[index] ?? 'unknown')
+      size = fileSummary(fileKinds)
+    }
     const item: ClipboardHistoryItem = {
       id: existing?.id ?? randomUUID(), type, data, createdAt: this.deps.now?.() ?? Date.now(),
       ...(fileUris ? { fileUris } : {}),
+      ...(fileKinds ? { fileKinds } : {}),
+      ...(type === 'text' && existing?.textOrigin ? { textOrigin: existing.textOrigin } : {}),
       params: { size, type, source, tags: [
         { code: 'size', value: size },
         { code: 'type', value: KIND_LABELS[type] },
@@ -99,6 +111,37 @@ export class ClipboardHistory {
     return item
   }
 
+  recordColorCopy(text: string): ClipboardHistoryItem {
+    if (!parseColor(text)) throw new Error('Не удалось сохранить цвет.')
+    this.acknowledgeClipboard({ text, image: null })
+    const item = this.add('color', text, `${text.length} симв.`, { name: 'ClipClip', title: 'Конвертация цвета' })
+    this.trim()
+    this.notify()
+    return item
+  }
+
+  updateFileKinds(id: string, kinds?: FileKind[]) {
+    const item = this.items.find(item => item.id === id && item.fileUris)
+    if (!item || kinds?.length !== item.fileUris!.length) return
+    const resolved = kinds.map((kind, index) => kind === 'unknown' ? item.fileKinds?.[index] ?? kind : kind)
+    if (JSON.stringify(resolved) === JSON.stringify(item.fileKinds)) return
+    item.fileKinds = resolved
+    item.params.size = fileSummary(resolved)
+    item.params.tags = item.params.tags.map(tag => tag.code === 'size' ? { ...tag, value: item.params.size } : tag)
+    this.notify()
+  }
+
+  recordFilePathCopy(text: string): ClipboardHistoryItem {
+    if (!text || Buffer.byteLength(text, 'utf8') > MAX_ITEM_BYTES) throw new Error('Не удалось сохранить путь.')
+    this.acknowledgeClipboard({ text, image: null })
+    const item = this.add('text', text, `${text.length} симв.`, { name: 'ClipClip', title: 'Копирование пути' })
+    // A path ending in .pdf or .docx is still plain text after restarting.
+    item.textOrigin = 'file-path'
+    this.trim()
+    this.notify()
+    return item
+  }
+
   async capture(): Promise<void> {
     if (this.busy || this.paused) return
     this.busy = true
@@ -112,6 +155,11 @@ export class ClipboardHistory {
       const filesChanged = this.previous?.files !== next.files
       let source = UNKNOWN_SOURCE
       try { source = await this.deps.source() } catch { /* Source attribution is best effort. */ }
+      const files = isFileUriList(snapshot.fileUris) ? snapshot.fileUris : undefined
+      let fileKinds: FileKind[] | undefined
+      if (filesChanged && files) {
+        try { fileKinds = await this.deps.fileKinds?.(files) } catch { /* Preserve the record when filesystem metadata is unavailable. */ }
+      }
       if (this.paused || this.epoch !== epoch) return
       // Relaunching while ClipClip owns focus must not downgrade a saved document's attribution.
       if (source === UNKNOWN_SOURCE && snapshot.text) {
@@ -125,18 +173,17 @@ export class ClipboardHistory {
           this.error = 'Запись больше 8 МБ пропущена.'
           return
         }
-        this.add(type, data, size, type === 'image' ? snapshot.imageSource ?? source : source, fileUris)
+        this.add(type, data, size, type === 'image' ? snapshot.imageSource ?? source : source, fileUris, fileKinds)
       }
-      const documents = isFileUriList(snapshot.fileUris) && snapshot.fileUris.some(isDocumentFile) ? snapshot.fileUris : undefined
-      if (filesChanged && documents) {
-        const paths = documents.map(uri => {
-          const url = new URL(uri)
-          return (url.hostname ? '//' + url.hostname : '') + decodeURIComponent(url.pathname).replace(/^\/(?=[A-Za-z]:\/)/, '')
-        }).join('\n')
-        add('document', paths, `${documents.length} файл.`, [...documents])
+      if (filesChanged && files) {
+        const paths = files.map(filePathLabel).join('\n')
+        add('file', paths, '', [...files])
       }
-      if (!documents && textChanged && snapshot.text) add(classifyText(snapshot.text, source), snapshot.text, `${snapshot.text.length} симв.`)
-      if (!documents && imageChanged && snapshot.image && /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(snapshot.image.data)) {
+      if (!files && textChanged && snapshot.text) {
+        const savedPath = this.items.some(item => item.textOrigin === 'file-path' && item.data === snapshot.text)
+        add(savedPath ? 'text' : classifyText(snapshot.text, source), snapshot.text, `${snapshot.text.length} симв.`)
+      }
+      if (!files && imageChanged && snapshot.image && /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(snapshot.image.data)) {
         add('image', snapshot.image.data, `${snapshot.image.width} × ${snapshot.image.height}`)
       }
       this.trim()

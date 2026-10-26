@@ -44,6 +44,7 @@
     "vue-tsc": "^3.3.13"
   },
   "dependencies": {
+    "colorjs.io": "^0.7.1",
     "get-windows": "^9.3.0",
     "koffi": "^3.3.3"
   },

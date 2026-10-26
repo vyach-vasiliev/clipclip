@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue'
-import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck, mdiFullscreen, mdiFullscreenExit, mdiPlus, mdiMinus, mdiFitToScreenOutline, mdiChevronLeft, mdiChevronRight } from '@mdi/js'
+import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck, mdiFullscreen, mdiFullscreenExit, mdiPlus, mdiMinus, mdiFitToScreenOutline, mdiChevronLeft, mdiChevronRight, mdiAlertCircleOutline } from '@mdi/js'
 import { HISTORY_LIMIT, KIND_LABELS, TAG_LABELS, type ClipboardKind, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
 import { useBufferStore } from '../store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags, isEditingTarget, isActionTarget } from '../utils/history'
@@ -9,6 +9,11 @@ import AppIcon from './AppIcon.vue'
 import TagBadge from './TagBadge.vue'
 import { useTextEditor } from '../composables/textEditor'
 import { useImageZoom } from '../composables/imageZoom'
+import { useFileAvailability } from '../composables/fileAvailability'
+import { colorSwatch } from '../../shared/colors'
+import ColorConverter from './ColorConverter.vue'
+import FileLocations from './FileLocations.vue'
+import FileActions from './FileActions.vue'
 
 const buffer = useBufferStore()
 const search = ref('')
@@ -27,6 +32,36 @@ const previewKind = ref<ClipboardKind>('text')
 const previewFiles = ref(false)
 const previewIsText = computed(() => previewKind.value !== 'image' && !previewFiles.value)
 const previewOpen = ref(false)
+const colorItem = ref<ClipboardHistoryItem | null>(null)
+const fileAction = ref<{ item: ClipboardHistoryItem; index: number } | null>(null)
+function openFileActions(item: ClipboardHistoryItem, index: number) {
+  select(item)
+  fileAction.value = { item, index }
+}
+const colors = computed(() => Object.fromEntries(buffer.clipboardHistory
+  .filter(item => item.type !== 'image' && !item.fileUris)
+  .map(item => [item.id, colorSwatch(item.data)])))
+function openColor(item: ClipboardHistoryItem) { select(item); colorItem.value = item }
+watch(() => buffer.clipboardHistory, items => {
+  if (!buffer.busy && colorItem.value && !items.some(item => item.id === colorItem.value?.id && item.data === colorItem.value?.data)) colorItem.value = null
+  if (!buffer.busy && fileAction.value && !items.some(item => item.id === fileAction.value?.item.id)) fileAction.value = null
+})
+async function colorCopied(item: ClipboardHistoryItem) {
+  colorItem.value = null
+  await selectCopied(item, 'Цвет скопирован и добавлен в историю.')
+}
+async function pathCopied(item: ClipboardHistoryItem) {
+  fileAction.value = null
+  await selectCopied(item, 'Путь скопирован и добавлен в историю как текст.')
+}
+async function selectCopied(item: ClipboardHistoryItem, message: string) {
+  clearFilters()
+  selectedId.value = item.id
+  announce(message)
+  await nextTick()
+  document.getElementById('record-' + item.id)?.focus({ preventScroll: true })
+  historyList.value?.scrollTo({ top: 0 })
+}
 const fullscreen = ref(false)
 const imageZoom = useImageZoom()
 const { viewport: imageViewport, natural: imageNatural, scale: imageScale, percent: imagePercent, imageStyle, canvasStyle, dragging, canPan } = imageZoom
@@ -35,6 +70,8 @@ let unsubscribeFullscreen: (() => void) | undefined
 let announcementTimer: ReturnType<typeof setTimeout> | undefined
 const allTags = computed(() => historyTags(buffer.clipboardHistory))
 const filtered = computed(() => filterHistory(buffer.clipboardHistory, search.value, selectedTags.value))
+const historyList = ref<HTMLElement>()
+const { states: fileStates, refresh: refreshFiles, update: updateFileState } = useFileAvailability(filtered, historyList)
 const selected = computed(() => filtered.value.find(item => item.id === selectedId.value))
 const previewItems = computed(() => buffer.clipboardHistory.filter(item => item.type === previewKind.value))
 const previewIndex = computed(() => previewItems.value.findIndex(item => item.id === previewId.value))
@@ -142,6 +179,8 @@ async function copyPreview() {
   } else await copy(preview.value, true)
 }
 async function prepareQuickPick() {
+  colorItem.value = null
+  fileAction.value = null
   if (!await editor.flush()) { previewDialog.value?.showModal(); return }
   if (!await dismissPreview()) return
   clearFilters()
@@ -149,6 +188,7 @@ async function prepareQuickPick() {
   await nextTick()
   searchPanel.value?.focus()
   document.querySelector('.history-list')?.scrollTo({ top: 0 })
+  refreshFiles()
 }
 async function copy(item: ClipboardHistoryItem | undefined, hide = false) {
   if (item) await copyById(item.id, hide)
@@ -156,7 +196,7 @@ async function copy(item: ClipboardHistoryItem | undefined, hide = false) {
 async function copyById(id: string, hide = false) {
   if (buffer.busy) return
   copyingId.value = id
-  const copied = await buffer.copy(id)
+  const copied = await buffer.copy(id, updateFileState)
   copyingId.value = null
   if (copied) {
     announce('Скопировано в буфер обмена.')
@@ -176,6 +216,7 @@ async function move(direction: number) {
   }
 }
 function capturePreviewKeys(event: KeyboardEvent) {
+  if (colorItem.value || fileAction.value) return
   if (previewOpen.value && !event.isComposing && (event.key === 'Escape'
     || (!editing.value && !isEditingTarget(event.target) && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')))) {
     event.stopImmediatePropagation()
@@ -183,10 +224,10 @@ function capturePreviewKeys(event: KeyboardEvent) {
   }
 }
 function focusSearchOnActivation() {
-  if (!previewOpen.value) searchPanel.value?.focus()
+  if (!previewOpen.value && !colorItem.value && !fileAction.value) searchPanel.value?.focus()
 }
 function captureSearchTyping(event: KeyboardEvent) {
-  if (previewOpen.value || event.defaultPrevented || isEditingTarget(event.target)) return
+  if (previewOpen.value || colorItem.value || fileAction.value || event.defaultPrevented || isEditingTarget(event.target)) return
   const altGraph = event.getModifierState('AltGraph')
   if ((event.ctrlKey || event.metaKey) && !event.altKey
     && (event.code === 'KeyV' || event.key.toLowerCase() === 'v')) {
@@ -201,7 +242,7 @@ function captureSearchTyping(event: KeyboardEvent) {
   searchPanel.value?.insertText(event.key)
 }
 function captureSearchPaste(event: ClipboardEvent) {
-  if (previewOpen.value || event.defaultPrevented || isEditingTarget(event.target)) return
+  if (previewOpen.value || colorItem.value || fileAction.value || event.defaultPrevented || isEditingTarget(event.target)) return
   const text = event.clipboardData?.getData('text/plain')
   if (!text) return
   event.preventDefault()
@@ -209,6 +250,7 @@ function captureSearchPaste(event: ClipboardEvent) {
   searchPanel.value?.insertText(text)
 }
 function handleKeydown(event: KeyboardEvent) {
+  if (colorItem.value || fileAction.value) return
   if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return
   const editing = isEditingTarget(event.target)
   const otherAction = isActionTarget(event.target)
@@ -232,7 +274,7 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 function shortText(item: ClipboardHistoryItem) {
-  return (item.fileUris ? item.data.split('\n').map(file => file.split(/[\\/]/).at(-1)).join('\n') : item.data).slice(0, 1200)
+  return (item.fileUris ? item.data.split('\n').map(file => file.replace(/[\\/]+$/, '').split(/[\\/]/).at(-1) || file).join('\n') : item.data).slice(0, 1200)
 }
 
 onMounted(() => {
@@ -259,7 +301,7 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="history-page flex h-full min-h-0 w-full flex-col gap-2.5 px-3.5 pt-2 pb-2.5">
-    <header class="flex shrink-0 items-center gap-2 select-none" :class="{ 'window-drag': !previewOpen }">
+    <header class="flex shrink-0 items-center gap-2 select-none" :class="{ 'window-drag': !previewOpen && !colorItem && !fileAction }">
       <div class="mr-auto flex items-center gap-2"><AppIcon :path="mdiClipboardTextOutline" class="size-6 text-accent" /><h1 class="text-[17px] font-semibold tracking-tight">ClipClip</h1></div>
       <span class="flex items-center gap-1.5 text-xs text-muted" :title="buffer.persistent ? 'История сохраняется с шифрованием' : 'История только в памяти этой сессии'">
         <span class="size-1.5 rounded-full" :class="buffer.paused ? 'bg-amber-500' : 'bg-emerald-600 dark:bg-emerald-400'" />{{ buffer.paused ? 'Пауза' : 'Запись' }}
@@ -286,14 +328,20 @@ onBeforeUnmount(() => {
       <div v-else-if="!filtered.length" class="empty-state my-auto px-3 py-6 text-center text-muted">
         <AppIcon :path="mdiClipboardTextOutline" class="mx-auto size-10" />
         <h3 class="mt-2.5 mb-1.5 text-base font-semibold text-ink">{{ search || selectedTags.length ? 'Совпадений нет' : 'История пока пуста' }}</h3>
-        <p class="mb-2.5 text-[13px] text-pretty">{{ search || selectedTags.length ? 'Попробуйте другой запрос или уберите фильтры.' : buffer.paused ? 'Продолжите запись и скопируйте текст или изображение.' : 'Скопируйте текст или изображение в любом приложении — запись появится здесь.' }}</p>
+        <p class="mb-2.5 text-[13px] text-pretty">{{ search || selectedTags.length ? 'Попробуйте другой запрос или уберите фильтры.' : buffer.paused ? 'Продолжите запись и скопируйте текст, изображение или файл.' : 'Скопируйте текст, изображение, файл или папку — запись появится здесь.' }}</p>
         <button v-if="search || selectedTags.length" type="button" class="text-button" @click="clearFilters">Сбросить поиск и фильтры</button>
       </div>
 
-      <ul v-else class="history-list -mx-0.5 flex min-h-0 flex-col gap-2 overflow-y-auto p-0.5">
-        <li v-for="item in filtered" :key="item.id">
+      <ul v-else ref="historyList" class="history-list -mx-0.5 flex min-h-0 flex-col gap-2 overflow-y-auto p-0.5" @scroll.passive="refreshFiles">
+        <li v-for="item in filtered" :key="item.id" :data-file-id="item.fileUris ? item.id : undefined">
           <article class="clipboard-record flex items-center overflow-hidden rounded-lg hover:bg-accent/4 focus-within:bg-accent/10"
             :class="item.id === selectedId ? 'selected bg-selected' : 'bg-surface'">
+            <FileLocations v-if="item.fileUris" :item="item" @open="openFileActions(item, $event)" />
+            <button v-if="colors[item.id]" type="button" class="color-swatch icon-button ml-1" :disabled="buffer.busy"
+              :aria-label="'Конвертировать цвет ' + item.data.trim()" title="Конвертировать цвет — нажмите, чтобы выбрать формат для копирования"
+              aria-haspopup="dialog" @click="openColor(item)">
+              <span class="color-checker block size-5 overflow-hidden rounded" aria-hidden="true"><span class="block size-full" :style="{ backgroundColor: colors[item.id] ?? undefined }" /></span>
+            </button>
             <button :id="'record-' + item.id" type="button" class="record-select block min-h-[78px] min-w-0 flex-1 rounded-md px-3 py-2.5 text-left focus-visible:outline-none disabled:cursor-wait"
               :aria-pressed="item.id === selectedId" :aria-label="'Скопировать и скрыть. ' + recordLabel(item) + ', ' + item.params.source.name" title="Скопировать и скрыть"
               :disabled="buffer.busy" :tabindex="item.id === selectedId ? 0 : -1" @focus="select(item)" @click="select(item); copy(item, true)">
@@ -304,7 +352,17 @@ onBeforeUnmount(() => {
                 </template>
               </p>
               <img v-else :src="item.data" :alt="'Изображение из буфера, ' + item.params.size" class="image-preview block h-12 max-w-full rounded object-contain" loading="lazy" />
-              <span class="mt-1.5 flex gap-2 text-[11px] leading-snug text-muted"><span class="min-w-0 flex-1 truncate">{{ item.params.source.name }}</span><span class="max-w-[40%] shrink-0 truncate">{{ item.params.size }}</span></span>
+              <span class="mt-1.5 flex items-center gap-2 text-[11px] leading-snug text-muted">
+                <span class="flex min-w-0 flex-1 items-center gap-1">
+                  <span class="truncate">{{ item.params.source.name }}</span>
+                  <span v-if="item.fileUris && ['missing', 'unavailable'].includes(fileStates[item.id]?.status ?? '')"
+                    class="file-unavailable inline-flex shrink-0 text-danger" role="img"
+                    :aria-label="fileStates[item.id]?.message" :title="fileStates[item.id]?.message">
+                    <AppIcon :path="mdiAlertCircleOutline" class="size-3.5" />
+                  </span>
+                </span>
+                <span class="max-w-[40%] shrink-0 truncate">{{ item.params.size }}</span>
+              </span>
             </button>
             <div class="flex flex-col p-0.5">
               <button type="button" class="preview-button icon-button" :aria-label="'Просмотреть запись. ' + recordLabel(item)" title="Полный просмотр" @click="openPreview(item)"><AppIcon :path="mdiEyeOutline" class="size-[18px]" /></button>
@@ -380,5 +438,7 @@ onBeforeUnmount(() => {
         <AppIcon :path="mdiContentCopy" />{{ saving ? 'Сохраняется…' : copyingId !== null ? 'Копируется…' : 'Копировать и скрыть' }}
       </button>
     </dialog>
+    <ColorConverter v-if="colorItem" :id="colorItem.id" :text="colorItem.data" @close="colorItem = null" @copied="colorCopied" />
+    <FileActions v-if="fileAction" :item="fileAction.item" :index="fileAction.index" @close="fileAction = null" @copied="pathCopied" />
   </main>
 </template>

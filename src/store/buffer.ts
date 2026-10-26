@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import type { ClipboardHistoryItem, HistoryState } from '../../shared/clipboard'
+import type { ClipboardHistoryItem, FileCheckResult, HistoryState } from '../../shared/clipboard'
+import type { ColorFormat } from '../../shared/colors'
 
 export const useBufferStore = defineStore('buffer', () => {
   const clipboardHistory = ref<ClipboardHistoryItem[]>([])
@@ -56,18 +57,42 @@ export const useBufferStore = defineStore('buffer', () => {
     revision = -1
   }
 
-  async function action(operation: () => Promise<void>, failure: string): Promise<boolean> {
+  async function action(operation: () => Promise<void | string>, failure: string): Promise<boolean> {
     if (busy.value) return false
     busy.value = true
     error.value = null
-    try { await operation(); return true }
+    try {
+      const message = await operation()
+      if (message) { error.value = message; return false }
+      return true
+    }
     catch { error.value = failure; return false }
     finally { busy.value = false }
   }
 
-  const copy = (id: string) => action(
-    () => window.electronAPI!.copyItem(id), 'Не удалось скопировать запись. Попробуйте ещё раз.',
+  const copy = (id: string, onFileCheck?: (id: string, result: FileCheckResult) => void) => action(
+    async () => {
+      const result = await window.electronAPI!.copyItem(id)
+      if (clipboardHistory.value.some(item => item.id === id && item.fileUris)) {
+        onFileCheck?.(id, result ?? { status: 'available', message: 'Все файлы и папки доступны.' })
+      }
+      if (result && result.status !== 'available') return result.message
+    }, 'Не удалось скопировать запись. Попробуйте ещё раз.',
   )
+  async function copyColor(id: string, format: ColorFormat): Promise<ClipboardHistoryItem | null> {
+    let copied: ClipboardHistoryItem | null = null
+    await action(async () => { copied = await window.electronAPI!.copyColor(id, format) }, 'Не удалось скопировать цвет. Попробуйте ещё раз.')
+    return copied
+  }
+  const revealFile = (id: string, index: number) => action(async () => {
+    const result = await window.electronAPI!.revealFile(id, index)
+    if (result.status !== 'available') return result.message
+  }, 'Не удалось открыть файл или папку в Проводнике.')
+  async function copyFilePath(id: string, index: number): Promise<ClipboardHistoryItem | null> {
+    let copied: ClipboardHistoryItem | null = null
+    await action(async () => { copied = await window.electronAPI!.copyFilePath(id, index) }, 'Не удалось скопировать путь. Попробуйте ещё раз.')
+    return copied
+  }
   const remove = (id: string) => action(
     () => window.electronAPI!.deleteItem(id), 'Не удалось удалить запись.',
   )
@@ -82,5 +107,5 @@ export const useBufferStore = defineStore('buffer', () => {
   )
 
   return { clipboardHistory, loading, paused, persistent, shortcutAvailable, canUndo, error,
-    busy, connect, disconnect, copy, remove, undo, setPaused, hide, saveRevision, setFullscreen }
+    busy, connect, disconnect, copy, copyColor, revealFile, copyFilePath, remove, undo, setPaused, hide, saveRevision, setFullscreen }
 })

@@ -3,6 +3,9 @@ import { classifyText, matchesTag } from '../shared/content'
 import { isFileUriList, isHistoryItem, KIND_LABELS, type ClipboardKind } from '../shared/clipboard'
 const source = { name: 'Browser', title: '' }
 describe('clipboard classification and multilingual tags', () => {
+  it.each(['#bdbde9', 'rgb(189, 189, 233)', 'oklch(70% .1 240)', 'color(srgb .84 .84 .84)'])('tags %s as a color even from a document app', text => {
+    expect(classifyText(text, { name: 'Microsoft Word', title: 'document.docx' })).toBe('color')
+  })
   it.each(['https://example.test/file.pdf', 'http://example.test/path?q=1', 'www.example.test', 'mailto:test@example.test'])('recognizes the single address %s as a link', text => {
     expect(classifyText(text, { name: 'Microsoft Word', title: '' })).toBe('link')
   })
@@ -21,7 +24,9 @@ describe('clipboard classification and multilingual tags', () => {
   })
   it.each([
     ['text', ['text', 'txt', 'текст']], ['image', ['image', 'img', 'pic', 'picture', 'photo', 'изображение']],
-    ['document', ['document', 'doc', 'file', 'документ']], ['link', ['link', 'url', 'hyperlink', 'ссылка']],
+    ['document', ['document', 'doc', 'документ']], ['link', ['link', 'url', 'hyperlink', 'ссылка']],
+    ['file', ['file', 'folder', 'directory', 'файл', 'папка']],
+    ['color', ['color', 'colour', 'цвет', 'hex', 'rgb']],
   ] as [ClipboardKind, string[]][])('matches Russian and English aliases for %s', (kind, aliases) => {
     for (const alias of aliases) expect(matchesTag({ code: 'type', value: KIND_LABELS[kind] }, '#' + alias)).toBe(true)
     expect(matchesTag({ code: 'source', value: KIND_LABELS[kind] }, '#url')).toBe(false)
@@ -40,7 +45,12 @@ describe('clipboard classification and multilingual tags', () => {
     const record = { id: 'fixture', type: 'document', data: 'C:/Docs/a.pdf', fileUris: ['file:///C:/Docs/a.pdf'], createdAt: 1,
       params: { type: 'document', size: '1 файл.', source, tags: [{ code: 'type', value: 'Документ' }] } }
     expect(isHistoryItem(record)).toBe(true)
+    expect(isHistoryItem({ ...record, type: 'file', params: { ...record.params, type: 'file' } })).toBe(true)
+    expect(isHistoryItem({ ...record, type: 'file', fileUris: undefined, params: { ...record.params, type: 'file' } })).toBe(false)
     expect(isHistoryItem({ ...record, type: 'link', params: { ...record.params, type: 'link' } })).toBe(false)
     expect(isHistoryItem({ ...record, fileUris: ['https://example.test/a.pdf'] })).toBe(false)
+    expect(isHistoryItem({ ...record, fileKinds: ['folder'] })).toBe(true)
+    expect(isHistoryItem({ ...record, fileKinds: ['folder', 'file'] })).toBe(false)
+    expect(isHistoryItem({ ...record, fileKinds: ['injected'] })).toBe(false)
   })
 })

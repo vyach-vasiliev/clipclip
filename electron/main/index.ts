@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ClipboardItem, globalShortcut, ipcMain, Menu, nativeImage, net, protocol, safeStorage, session, Tray, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, clipboard, ClipboardItem, globalShortcut, ipcMain, Menu, nativeImage, net, protocol, safeStorage, session, shell, Tray, type IpcMainInvokeEvent } from 'electron'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -8,6 +8,8 @@ import { EncryptedHistoryStorage } from './storage'
 import { assetPath, isTrustedPage, requireId, requireTextRevision } from './security'
 import { registerWindowsShortcut } from './windowsShortcut'
 import { getWindowsClipboardOwnerReader } from './windowsClipboardSource'
+import { FileChecker } from './files'
+import { convertColor, isColorFormat } from '../../shared/colors'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const rendererRoot = path.join(root, 'dist')
@@ -31,6 +33,7 @@ let revision = 0
 let visibilityGeneration = 0
 let trayTransition: Promise<void> = Promise.resolve()
 let cachedImage: { digest: string; image: NonNullable<ClipboardSnapshot['image']> } | null = null
+const fileChecker = new FileChecker()
 let devServer = ''
 const requestedDevServer = !app.isPackaged && process.env.VITE_DEV_SERVER_URL
 if (requestedDevServer) {
@@ -100,7 +103,8 @@ async function getSource() {
   } catch { return UNKNOWN_SOURCE } finally { if (timeout) clearTimeout(timeout) }
 }
 
-const history = new ClipboardHistory({ read: readSnapshot, source: getSource })
+const history = new ClipboardHistory({ read: readSnapshot, source: getSource,
+  fileKinds: async uris => (await fileChecker.check(uris)).kinds ?? uris.map(() => 'unknown') })
 const monitor = new ClipboardMonitor(history)
 
 function state(): HistoryState {
@@ -158,13 +162,39 @@ function registerIpc() {
     ipcMain.handle(channel, (event, value: unknown) => { validateSender(event); return action(value) })
   }
   handle(CHANNELS.getHistory, () => state())
+  handle(CHANNELS.checkFiles, async value => {
+    const id = requireId(value)
+    const item = history.items.find(candidate => candidate.id === id)
+    if (!item?.fileUris) throw new Error('Файловая запись уже удалена.')
+    const result = await fileChecker.check(item.fileUris)
+    history.updateFileKinds(id, result.kinds)
+    return result
+  })
+  handle(CHANNELS.revealFile, async value => {
+    if (!value || typeof value !== 'object') throw new Error('Некорректный путь записи.')
+    const request = value as { id?: unknown; index?: unknown }
+    const id = requireId(request.id)
+    const item = history.items.find(candidate => candidate.id === id)
+    if (!item?.fileUris || typeof request.index !== 'number') throw new Error('Файловая запись уже недоступна.')
+    return fileChecker.reveal(item.fileUris, request.index, path => {
+      if (!history.items.includes(item)) throw new Error('Запись уже удалена.')
+      if (testMode) app.emit('clipclip:test:file-revealed', path)
+      else shell.showItemInFolder(path)
+    })
+  })
   handle(CHANNELS.copyItem, async value => {
     const id = requireId(value)
     const item = history.items.find(candidate => candidate.id === id)
     if (!item) throw new Error('Запись уже удалена.')
-    if (!testMode) {
-      if (item.fileUris) await clipboard.write([new ClipboardItem({ 'text/uri-list': new Blob([item.fileUris.join('\r\n')], { type: 'text/uri-list' }) })])
-      else if (item.type !== 'image') await clipboard.writeText(item.data)
+    if (item.fileUris) {
+      const fileUris = item.fileUris
+      const result = await fileChecker.copy(fileUris, async () => {
+        if (!history.items.includes(item)) throw new Error('Запись уже удалена.')
+        if (!testMode) await clipboard.write([new ClipboardItem({ 'text/uri-list': new Blob([fileUris.join('\r\n')], { type: 'text/uri-list' }) })])
+      })
+      if (result.status !== 'available') return result
+    } else if (!testMode) {
+      if (item.type !== 'image') await clipboard.writeText(item.data)
       else {
         const image = nativeImage.createFromDataURL(item.data)
         if (image.isEmpty()) throw new Error('Не удалось открыть изображение.')
@@ -173,6 +203,30 @@ function registerIpc() {
     }
     history.acknowledgeClipboard({ text: item.type !== 'image' && !item.fileUris ? item.data : '', fileUris: item.fileUris,
       image: item.type === 'image' ? { data: item.data, width: 1, height: 1 } : null })
+  })
+  handle(CHANNELS.copyFilePath, async value => {
+    if (!value || typeof value !== 'object') throw new Error('Некорректный путь записи.')
+    const request = value as { id?: unknown; index?: unknown }
+    const id = requireId(request.id)
+    const item = history.items.find(candidate => candidate.id === id)
+    if (!item?.fileUris || typeof request.index !== 'number' || !Number.isInteger(request.index)
+      || request.index < 0 || request.index >= item.fileUris.length) throw new Error('Путь записи недоступен.')
+    // Copy the saved path even if its file has since been moved or deleted.
+    const text = fileURLToPath(item.fileUris[request.index])
+    if (testMode) app.emit('clipclip:test:path-copied', text)
+    else await clipboard.writeText(text)
+    return history.recordFilePathCopy(text)
+  })
+  handle(CHANNELS.copyColor, async value => {
+    if (!value || typeof value !== 'object') throw new Error('Некорректный формат цвета.')
+    const request = value as { id?: unknown; format?: unknown }
+    const id = requireId(request.id)
+    if (!isColorFormat(request.format)) throw new Error('Некорректный формат цвета.')
+    const item = history.items.find(candidate => candidate.id === id)
+    if (!item || item.type === 'image' || item.fileUris) throw new Error('Цветовая запись уже недоступна.')
+    const text = convertColor(item.data, request.format)
+    if (!testMode) await clipboard.writeText(text)
+    return history.recordColorCopy(text)
   })
   handle(CHANNELS.deleteItem, value => history.delete(requireId(value)))
   handle(CHANNELS.saveTextRevision, value => {

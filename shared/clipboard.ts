@@ -1,4 +1,13 @@
-export type ClipboardKind = 'text' | 'image' | 'document' | 'link'
+import type { ColorFormat } from './colors'
+
+export type ClipboardKind = 'text' | 'image' | 'document' | 'link' | 'file' | 'color'
+export type FileKind = 'file' | 'folder' | 'unknown'
+
+export interface FileCheckResult {
+  status: 'available' | 'missing' | 'unavailable'
+  message: string
+  kinds?: FileKind[]
+}
 
 export interface ClipboardTag {
   code: 'size' | 'type' | 'source'
@@ -15,6 +24,8 @@ export interface ClipboardHistoryItem {
   type: ClipboardKind
   data: string
   fileUris?: string[]
+  fileKinds?: FileKind[]
+  textOrigin?: 'file-path'
   createdAt: number
   params: {
     size: string
@@ -51,7 +62,11 @@ export interface HistoryState {
 export interface ElectronAPI {
   getHistory(): Promise<HistoryState>
   onHistoryChanged(callback: (state: HistoryState) => void): () => void
-  copyItem(id: string): Promise<void>
+  copyItem(id: string): Promise<void | FileCheckResult>
+  copyColor(id: string, format: ColorFormat): Promise<ClipboardHistoryItem>
+  checkFiles(id: string): Promise<FileCheckResult>
+  revealFile(id: string, index: number): Promise<FileCheckResult>
+  copyFilePath(id: string, index: number): Promise<ClipboardHistoryItem>
   saveTextRevision(id: string, text: string): Promise<ClipboardHistoryItem>
   deleteItem(id: string): Promise<void>
   undoDelete(): Promise<void>
@@ -66,6 +81,10 @@ export const CHANNELS = {
   getHistory: 'history:get',
   changed: 'history:changed',
   copyItem: 'history:copy',
+  copyColor: 'history:copy-color',
+  checkFiles: 'history:check-files',
+  revealFile: 'history:reveal-file',
+  copyFilePath: 'history:copy-file-path',
   saveTextRevision: 'history:save-text-revision',
   deleteItem: 'history:delete',
   undoDelete: 'history:undo',
@@ -82,7 +101,7 @@ export const MAX_HISTORY_BYTES = 32 * 1024 * 1024
 
 export const UNKNOWN_SOURCE: ClipboardSource = { name: 'Неизвестно', title: '' }
 export const TAG_LABELS = { size: 'Размер', type: 'Тип', source: 'Источник' } as const
-export const KIND_LABELS = { text: 'Текст', image: 'Изображение', document: 'Документ', link: 'Ссылка' } as const
+export const KIND_LABELS = { text: 'Текст', image: 'Изображение', document: 'Документ', link: 'Ссылка', file: 'Файлы и папки', color: 'Цвет' } as const
 
 export function isFileUriList(value: unknown): value is string[] {
   return Array.isArray(value) && value.length > 0 && value.length <= 100
@@ -101,10 +120,14 @@ export function isHistoryItem(value: unknown): value is ClipboardHistoryItem {
   if (!value || typeof value !== 'object') return false
   const item = value as ClipboardHistoryItem
   return typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 100
-    && ['text', 'image', 'document', 'link'].includes(item.type)
+    && ['text', 'image', 'document', 'link', 'file', 'color'].includes(item.type)
     && typeof item.data === 'string' && item.data.length <= MAX_ITEM_BYTES
     && (item.type !== 'image' || /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(item.data))
-    && (item.fileUris === undefined || (item.type === 'document' && isFileUriList(item.fileUris)))
+    && (item.fileUris === undefined || (['document', 'file'].includes(item.type) && isFileUriList(item.fileUris)))
+    && (item.type !== 'file' || isFileUriList(item.fileUris))
+    && (item.textOrigin === undefined || (item.textOrigin === 'file-path' && item.type === 'text' && !item.fileUris))
+    && (item.fileKinds === undefined || (Array.isArray(item.fileKinds) && item.fileKinds.length === item.fileUris?.length
+      && item.fileKinds.every(kind => ['file', 'folder', 'unknown'].includes(kind))))
     && Number.isFinite(item.createdAt) && !!item.params
     && typeof item.params.size === 'string' && item.params.size.length <= 100
     && item.params.type === item.type && !!item.params.source

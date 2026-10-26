@@ -14,6 +14,57 @@ function setup(snapshot: ClipboardSnapshot = { text: 'hello', image: null }) {
 afterEach(() => { active.splice(0).forEach(history => history.dispose()); vi.useRealTimers() })
 
 describe('clipboard history', () => {
+  it('records copied paths as text, separately from the file, including after reload and recapture', async () => {
+    const { history } = setup({ text: '', image: null, fileUris: ['file:///C:/Docs/report.pdf'] })
+    await history.capture()
+    const file = history.items[0]
+    const copied = history.recordFilePathCopy('C:\\Docs\\report.pdf')
+    expect(copied.type).toBe('text')
+    expect(copied.params.tags).toContainEqual({ code: 'type', value: 'Текст' })
+    expect(copied.fileUris).toBeUndefined()
+    expect(history.items).toHaveLength(2)
+    expect(history.items[1].id).toBe(file.id)
+    expect(history.recordFilePathCopy(copied.data).id).toBe(copied.id)
+    const restored = new ClipboardHistory({ read: () => ({ text: copied.data, image: null }), source })
+    active.push(restored)
+    restored.hydrate(history.items)
+    await restored.capture()
+    expect(restored.items[0].type).toBe('text')
+    expect(restored.items[0].textOrigin).toBe('file-path')
+    expect(restored.items[0].id).toBe(copied.id)
+    expect(restored.items).toHaveLength(2)
+  })
+  it('records color copies, preserves the original, deduplicates and migrates old color tags', async () => {
+    const { history, setSnapshot } = setup({ text: 'rgb(189, 189, 233)', image: null })
+    await history.capture()
+    const original = history.items[0]
+    expect(original.type).toBe('color')
+    const converted = history.recordColorCopy('#bdbde9')
+    expect(history.items.map(item => item.data)).toEqual(['#bdbde9', 'rgb(189, 189, 233)'])
+    expect(converted.params.tags).toContainEqual({ code: 'type', value: 'Цвет' })
+    expect(converted.params.source.name).toBe('ClipClip')
+    expect(history.recordColorCopy('#bdbde9').id).toBe(converted.id)
+    setSnapshot({ text: '#bdbde9', image: null }); await history.capture()
+    expect(history.items).toHaveLength(2)
+    history.hydrate([{ ...original, type: 'text', params: { ...original.params, type: 'text', tags: [{ code: 'type', value: 'Текст' }] } }])
+    expect(history.items[0].params.tags).toContainEqual({ code: 'type', value: 'Цвет' })
+  })
+  it('labels folders and files, persists their kinds and upgrades legacy unknown objects', async () => {
+    const history = new ClipboardHistory({ read: () => ({ text: '', image: null, fileUris: ['file:///C:/folder', 'file:///C:/archive.zip'] }),
+      source, fileKinds: async () => ['folder', 'file'] })
+    active.push(history)
+    await history.capture()
+    expect(history.items[0].fileKinds).toEqual(['folder', 'file'])
+    expect(history.items[0].params.size).toBe('1 файл, 1 папка')
+    const record = history.items[0]
+    history.hydrate([{ ...record, fileKinds: undefined }])
+    history.updateFileKinds(record.id, ['folder', 'file'])
+    expect(history.items[0].params.tags).toContainEqual({ code: 'size', value: '1 файл, 1 папка' })
+    history.updateFileKinds(record.id, ['unknown', 'unknown'])
+    expect(history.items[0].fileKinds).toEqual(['folder', 'file'])
+    history.hydrate(history.items)
+    expect(history.items[0].fileKinds).toEqual(['folder', 'file'])
+  })
   it('prefers clipboard ownership for images while leaving text attribution unchanged', async () => {
     const imageSource = { name: 'Ножницы', title: '' }
     const { history } = setup({ text: 'ordinary text', image, imageSource })
@@ -42,15 +93,38 @@ describe('clipboard history', () => {
     const { history, setSnapshot } = setup({ text: 'file text representation', image, fileUris })
     await history.capture()
     expect(history.items).toHaveLength(1)
-    expect(history.items[0].type).toBe('document')
+    expect(history.items[0].type).toBe('file')
     expect(history.items[0].fileUris).toEqual(fileUris)
-    expect(history.items[0].data).toContain('C:/Docs/report.pdf')
+    expect(history.items[0].data).toContain('C:\\Docs\\report.pdf')
     expect(() => history.saveTextRevision(history.items[0].id, 'edited path')).toThrow()
     history.hydrate(history.items)
     expect(history.items[0].fileUris).toEqual(fileUris)
     history.acknowledgeClipboard({ text: '', image: null, fileUris })
     setSnapshot({ text: '', image: null, fileUris }); await history.capture()
     expect(history.items).toHaveLength(1)
+  })
+  it.each([
+    ['file:///C:/Downloads/archive.zip'], ['file:///C:/Tools/app.exe'], ['file:///C:/Projects/folder'],
+    ['file:///C:/Projects/folder/', 'file:///C:/Downloads/archive.zip', 'file:///C:/Docs/report.pdf'],
+    ['file:///C:/Images/photo.png'], ['file:///C:/Downloads/README'],
+  ])('captures arbitrary files and folders: %s', async (...fileUris) => {
+    const { history } = setup({ text: 'fallback', image, fileUris })
+    await history.capture()
+    expect(history.items).toHaveLength(1)
+    expect(history.items[0].type).toBe('file')
+    expect(history.items[0].fileUris).toEqual(fileUris)
+    expect(history.items[0].params.tags).toContainEqual({ code: 'type', value: 'Файлы и папки' })
+  })
+  it('migrates legacy document file lists without changing their identity', async () => {
+    const { history } = setup({ text: '', image: null, fileUris: ['file:///C:/Docs/report.pdf'] })
+    await history.capture()
+    const original = history.items[0]
+    history.hydrate([{ ...original, type: 'document', params: { ...original.params, type: 'document',
+      tags: [{ code: 'type', value: 'Документ' }] } }])
+    expect(history.items[0].id).toBe(original.id)
+    expect(history.items[0].type).toBe('file')
+    expect(history.items[0].fileUris).toEqual(original.fileUris)
+    expect(history.items[0].params.tags).toContainEqual({ code: 'type', value: 'Файлы и папки' })
   })
   it('reclassifies existing text without losing its id or source', async () => {
     const { history } = setup()

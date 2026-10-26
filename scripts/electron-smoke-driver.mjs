@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ClipboardItem, nativeImage, nativeTheme, safeStorage } from 'electron'
 import assert from 'node:assert/strict'
-import { writeFile } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
+import { writeFile, mkdir, unlink } from 'node:fs/promises'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import '../dist-electron/main/index.js'
 import { checkWindowsShortcut } from './windows-shortcut-check.mjs'
@@ -13,6 +13,10 @@ process.on('unhandledRejection', error => { console.error(error); app.exit(1) })
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
 let fixtureTray
 const taskbarStates = new WeakMap()
+const revealedPaths = []
+const copiedPaths = []
+app.on('clipclip:test:file-revealed', path => revealedPaths.push(path))
+app.on('clipclip:test:path-copied', path => copiedPaths.push(path))
 app.on('clipclip:test:tray-created', tray => { fixtureTray = tray })
 app.on('browser-window-created', (_event, created) => {
   const setSkipTaskbar = created.setSkipTaskbar.bind(created)
@@ -58,7 +62,7 @@ async function run() {
     const capabilities = await evaluate('({api: Object.keys(window.electronAPI), genericIPC: typeof window.ipcRenderer, records: document.querySelectorAll(".record-select").length})')
     assert.equal(capabilities.genericIPC, 'undefined')
     assert.equal(capabilities.records, 2)
-    assert.deepEqual(capabilities.api.sort(), ['copyItem', 'saveTextRevision', 'deleteItem', 'getHistory', 'hideWindow', 'setPreviewFullscreen', 'onPreviewFullscreenChanged', 'onHistoryChanged', 'onWindowShown', 'setPaused', 'undoDelete'].sort())
+    assert.deepEqual(capabilities.api.sort(), ['copyItem', 'copyColor', 'checkFiles', 'revealFile', 'copyFilePath', 'saveTextRevision', 'deleteItem', 'getHistory', 'hideWindow', 'setPreviewFullscreen', 'onPreviewFullscreenChanged', 'onHistoryChanged', 'onWindowShown', 'setPaused', 'undoDelete'].sort())
     assert.equal(window.webContents.isDevToolsOpened(), false)
     window.show()
     window.focus()
@@ -404,19 +408,70 @@ async function run() {
     process.env.CLIPCLIP_TEST_TEXT = 'Synthetic document paragraph'
     delete process.env.CLIPCLIP_TEST_IMAGE
     await waitRecord('item => item.type === "document" && item.data === "Synthetic document paragraph"')
-    const fileUris = ['file:///C:/Fixture/Report%20one.pdf', 'file:///C:/Fixture/Table.xlsx']
+    const fileRoot = path.join(process.env.CLIPCLIP_TEST_USER_DATA, 'synthetic-files')
+    await mkdir(fileRoot, { recursive: true })
+    const archive = path.join(fileRoot, 'Архив one.zip')
+    const folder = path.join(fileRoot, 'Folder')
+    await writeFile(archive, 'synthetic file payload')
+    await mkdir(folder)
+    const fileUris = [pathToFileURL(archive).href, pathToFileURL(folder).href]
     const payload = new ClipboardItem({ 'text/uri-list': new Blob([fileUris.join('\r\n')], { type: 'text/uri-list' }) })
     assert.equal(await (await payload.getType('text/uri-list')).text(), fileUris.join('\r\n'))
     process.env.CLIPCLIP_TEST_FILES = JSON.stringify(fileUris)
     process.env.CLIPCLIP_TEST_TEXT = ''
-    await waitRecord('item => item.type === "document" && item.fileUris?.length === 2')
+    await waitRecord('item => item.type === "file" && item.fileUris?.length === 2')
+    const filesId = await evaluate('(await window.electronAPI.getHistory()).items.find(item => item.fileUris)?.id')
+    assert.equal((await evaluate('window.electronAPI.checkFiles(' + JSON.stringify(filesId) + ')')).status, 'available')
+    assert.equal(await evaluate('window.electronAPI.copyItem(' + JSON.stringify(filesId) + ')'), undefined)
     app.emit('activate'); await delay(100)
-    await evaluate('document.querySelector(".preview-button").click()')
+    assert.deepEqual(await evaluate('(await window.electronAPI.getHistory()).items.find(item => item.id === ' + JSON.stringify(filesId) + ').fileKinds'), ['file', 'folder'])
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).items.find(item => item.id === ' + JSON.stringify(filesId) + ').params.size'), '1 файл, 1 папка')
+    assert.equal(await evaluate('document.querySelectorAll(".file-location").length'), 2)
+    assert.equal(await evaluate('document.querySelectorAll(".file-location")[1].getAttribute("aria-label").startsWith("Папка.")'), true)
+    assert.equal(await evaluate('document.querySelector(".copy-file-path") === null'), true)
+    await evaluate('document.querySelectorAll(".file-location")[0].click()'); await delay(50)
+    assert.equal(await evaluate('document.querySelector(".file-actions").open'), true)
+    await screenshot(window, 'file-actions.png')
+    await evaluate('document.querySelector(".reveal-file").click()'); await delay(50)
+    await evaluate('document.querySelectorAll(".file-location")[1].click()'); await delay(50)
+    await evaluate('document.querySelector(".reveal-file").click()'); await delay(50)
+    assert.deepEqual(revealedPaths, [archive, folder])
+    await evaluate('document.querySelectorAll(".file-location")[0].click()'); await delay(50)
+    await evaluate('document.querySelector(".copy-file-path").click()'); await delay(50)
+    assert.equal(await evaluate('document.querySelector(".file-actions") === null'), true)
+    await evaluate('document.querySelectorAll(".file-location")[1].click()'); await delay(50)
+    await evaluate('document.querySelector(".copy-file-path").click()'); await delay(50)
+    assert.deepEqual(copiedPaths, [archive, folder])
+    assert.equal(window.isVisible(), true)
+    const savedFolderPath = await evaluate('(await window.electronAPI.getHistory()).items.find(item => item.textOrigin === "file-path" && item.data === ' + JSON.stringify(folder) + ')')
+    assert.equal(savedFolderPath.type, 'text')
+    assert.equal(savedFolderPath.fileUris, undefined)
+    assert.equal(await evaluate('document.querySelector(".file-actions") === null'), true)
+    for (const index of [-1, 2, .5, 'https://example.test']) {
+      assert.equal(await evaluate('window.electronAPI.revealFile(' + JSON.stringify(filesId) + ', ' + JSON.stringify(index) + ').then(()=>false,()=>true)'), true)
+      assert.equal(await evaluate('window.electronAPI.copyFilePath(' + JSON.stringify(filesId) + ', ' + JSON.stringify(index) + ').then(()=>false,()=>true)'), true)
+    }
+    assert.deepEqual(copiedPaths, [archive, folder])
+    assert.equal(await evaluate('window.electronAPI.copyFilePath("missing-record", 0).then(()=>false,()=>true)'), true)
+    await screenshot(window, 'files-folders-icons.png')
+    await evaluate('document.getElementById(' + JSON.stringify('record-' + filesId) + ').closest("article").querySelector(".preview-button").click()')
     await delay(100)
     assert.equal(await evaluate('document.querySelector(".edit-toggle") === null'), true)
-    assert.equal(await evaluate('document.querySelector(".preview-content pre").textContent.includes("Report one.pdf")'), true)
+    assert.equal(await evaluate('document.querySelector(".preview-content pre").textContent.includes("Архив one.zip")'), true)
     await screenshot(window, 'document-preview.png')
     await evaluate('document.querySelector(".close-preview").click()')
+    await unlink(archive)
+    await evaluate('window.electronAPI.copyFilePath(' + JSON.stringify(filesId) + ', 0)')
+    assert.deepEqual(copiedPaths, [archive, folder, archive])
+    assert.equal((await evaluate('window.electronAPI.revealFile(' + JSON.stringify(filesId) + ', 0)')).status, 'missing')
+    assert.deepEqual(revealedPaths, [archive, folder])
+    assert.equal((await evaluate('window.electronAPI.revealFile(' + JSON.stringify(filesId) + ', 1)')).status, 'available')
+    assert.equal((await evaluate('window.electronAPI.copyItem(' + JSON.stringify(filesId) + ')')).status, 'missing')
+    await evaluate('document.getElementById(' + JSON.stringify('record-' + filesId) + ').click()')
+    await delay(100)
+    assert.equal(window.isVisible(), true)
+    assert.equal(await evaluate('document.querySelector(".file-unavailable").title.includes("Архив one.zip")'), true)
+    await screenshot(window, 'file-unavailable.png')
     delete process.env.CLIPCLIP_TEST_FILES
     process.env.CLIPCLIP_TEST_TEXT = 'https://example.test/clipboard'
     await waitRecord('item => item.type === "link" && item.data === "https://example.test/clipboard"')
@@ -444,6 +499,60 @@ async function run() {
     await delay(100)
     await evaluate('document.querySelector("input").focus()')
     assert.equal(await evaluate('getComputedStyle(document.querySelector(".clipboard-record")).outlineStyle'), 'none')
+
+    // Color fixtures use the isolated clipboard adapter, never the system clipboard.
+    delete process.env.CLIPCLIP_TEST_SOURCE
+    for (const color of ['#bdbde9', 'rgb(189 189 233 / .5)', 'oklch(70% .15 40)', 'color(display-p3 1 0 0 / .5)']) {
+      process.env.CLIPCLIP_TEST_TEXT = color
+      await waitRecord('item => item.data === ' + JSON.stringify(color))
+    }
+    window.setSize(460, 560)
+    app.emit('activate'); await delay(100)
+    assert.equal(await evaluate('document.querySelectorAll(".color-swatch").length'), 4)
+    assert.ok(await evaluate('document.querySelector(".color-swatch").title.includes("Конвертировать")'))
+    await screenshot(window, 'colors-history.png')
+    const colorId = await evaluate('(await window.electronAPI.getHistory()).items[0].id')
+    assert.equal(await evaluate('window.electronAPI.copyColor(' + JSON.stringify(colorId) + ', "__proto__").then(()=>false,()=>true)'), true)
+    assert.equal(await evaluate('window.electronAPI.copyColor("missing-color", "hex").then(()=>false,()=>true)'), true)
+    assert.equal(await evaluate('window.electronAPI.copyColor({}, "hex").then(()=>false,()=>true)'), true)
+    const nonColorId = await evaluate('(await window.electronAPI.getHistory()).items.find(item => item.data.startsWith("https://"))?.id')
+    assert.equal(await evaluate('window.electronAPI.copyColor(' + JSON.stringify(nonColorId) + ', "hex").then(()=>false,()=>true)'), true)
+    await evaluate('document.querySelector(".color-swatch").focus(); document.querySelector(".color-swatch").click()')
+    await delay(100)
+    assert.equal(await evaluate('document.querySelector(".color-dialog").open'), true)
+    assert.equal(await evaluate('document.querySelectorAll(".color-variant").length'), 10)
+    assert.equal(await evaluate('Array.from(document.querySelectorAll(".color-variant code")).every(code => CSS.supports("color", code.textContent))'), true)
+    await screenshot(window, 'colors-converter-light.png')
+    nativeTheme.themeSource = 'dark'; await delay(100)
+    await screenshot(window, 'colors-converter-dark.png')
+    window.setSize(380, 420); await delay(100)
+    assert.equal(await evaluate('document.querySelector(".color-dialog").scrollHeight <= document.querySelector(".color-dialog").clientHeight'), true)
+    assert.equal(await evaluate('document.querySelector(".color-variants").scrollHeight > document.querySelector(".color-variants").clientHeight'), true)
+    await screenshot(window, 'colors-converter-compact.png')
+    await evaluate('document.querySelector("[data-color-format=hex]").click()')
+    await delay(100)
+    assert.equal(await evaluate('document.querySelector(".color-dialog") === null'), true)
+    const convertedColor = await evaluate('(await window.electronAPI.getHistory()).items.find(item => item.params.source.name === "ClipClip" && item.type === "color")')
+    assert.ok(convertedColor.data.startsWith('#'))
+    assert.ok(convertedColor.params.tags.some(tag => tag.code === 'type' && tag.value === 'Цвет'))
+    process.env.CLIPCLIP_TEST_TEXT = convertedColor.data
+    assert.equal(window.isVisible(), true)
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).items.find(item => item.id === ' + JSON.stringify(colorId) + ').data'), 'color(display-p3 1 0 0 / .5)')
+    await screenshot(window, 'color-added-to-history.png')
+    await evaluate('document.querySelector("input").value="#color"; document.querySelector("input").dispatchEvent(new Event("input",{bubbles:true}))')
+    await delay(50)
+    assert.ok(await evaluate('Array.from(document.querySelectorAll(".suggestions .tag-badge")).some(button => button.textContent.trim() === "Цвет")'))
+    await evaluate('document.querySelector("input").value=""; document.querySelector("input").dispatchEvent(new Event("input",{bubbles:true}))')
+    await delay(50)
+    await evaluate('document.querySelector(".color-swatch").focus(); document.querySelector(".color-swatch").click()')
+    await delay(50)
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+    window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+    await delay(100)
+    assert.equal(await evaluate('document.querySelector(".color-dialog") === null'), true)
+    assert.equal(window.isVisible(), true)
+    assert.equal(await evaluate('document.activeElement === document.querySelector(".color-swatch")'), true)
+    nativeTheme.themeSource = 'light'
 
     await evaluate('document.querySelector(".record-select").click()')
     await delay(100)

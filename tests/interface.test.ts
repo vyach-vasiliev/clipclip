@@ -6,10 +6,13 @@ import Second from '../src/components/Second.vue'
 import { useBufferStore } from '../src/store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags } from '../src/utils/history'
 import type { ClipboardHistoryItem, ElectronAPI, HistoryState } from '../shared/clipboard'
+import { convertColor } from '../shared/colors'
+import { filePathLabel } from '../shared/files'
 
 const wrappers: VueWrapper[] = []
 let emitState: (state: HistoryState) => void
 let emitShown: () => void
+let intersect: IntersectionObserverCallback
 const item = (id: string, data = 'fixture [ bracket.\nsecond line'): ClipboardHistoryItem => ({
   id, type: 'text', data, createdAt: 1,
   params: { size: '20 симв.', type: 'text', source: { name: 'Fixture: app', title: '' },
@@ -23,7 +26,25 @@ async function setup(items?: ClipboardHistoryItem[]) {
     getHistory: vi.fn(async () => state(items)),
     onHistoryChanged: vi.fn(callback => { emitState = callback; return vi.fn() }),
     onWindowShown: vi.fn(callback => { emitShown = callback; return vi.fn() }),
-    copyItem: vi.fn(async () => {}), deleteItem: vi.fn(async () => {}), undoDelete: vi.fn(async () => {}),
+    copyItem: vi.fn(async () => {}),
+    copyColor: vi.fn(async (id, format) => {
+      const original = items!.find(record => record.id === id)!
+      const converted = item('converted', convertColor(original.data, format))
+      converted.type = converted.params.type = 'color'
+      converted.params.tags = [{ code: 'type', value: 'Цвет' }]
+      emitState(state([converted, ...items!], 2))
+      return converted
+    }),
+    revealFile: vi.fn(async () => ({ status: 'available' as const, message: 'Открыто.' })),
+    copyFilePath: vi.fn(async (id, index) => {
+      const original = items!.find(record => record.id === id)!
+      const copied = item('copied-path', filePathLabel(original.fileUris![index]))
+      copied.textOrigin = 'file-path'
+      emitState(state([copied, ...items!], 2))
+      return copied
+    }),
+    deleteItem: vi.fn(async () => {}), undoDelete: vi.fn(async () => {}),
+    checkFiles: vi.fn(async () => ({ status: 'available' as const, message: 'Все файлы и папки доступны.' })),
     saveTextRevision: vi.fn(async (_id, text) => item('edited', text)),
     setPaused: vi.fn(async () => {}), hideWindow: vi.fn(async () => {}),
     setPreviewFullscreen: vi.fn(async () => {}), onPreviewFullscreenChanged: vi.fn(() => vi.fn()),
@@ -39,6 +60,10 @@ async function setup(items?: ClipboardHistoryItem[]) {
   return { wrapper, api, buffer }
 }
 beforeEach(() => {
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(callback: IntersectionObserverCallback) { intersect = callback }
+    observe() {} disconnect() {}
+  })
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
   vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addEventListener() {}, removeEventListener() {} })))
   HTMLElement.prototype.scrollIntoView = vi.fn()
@@ -47,6 +72,115 @@ beforeEach(() => {
   HTMLDialogElement.prototype.showModal = vi.fn()
 })
 afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); document.body.innerHTML = ''; delete window.electronAPI; vi.unstubAllGlobals() })
+
+describe('color conversion', () => {
+  it('adds a converted color, closes conversion, selects the result and keeps the app open', async () => {
+    const { wrapper, api, buffer } = await setup([item('color', 'rgb(189, 189, 233)'), item('text', 'color: red;')])
+    expect(wrapper.findAll('.color-swatch')).toHaveLength(1)
+    expect(wrapper.get('.color-swatch').attributes('title')).toContain('Конвертировать')
+    await wrapper.get('.color-swatch').trigger('click')
+    expect(wrapper.get('.color-dialog').attributes('aria-labelledby')).toBe('color-title')
+    expect(wrapper.findAll('.color-variant')).toHaveLength(10)
+    expect(wrapper.get('[data-color-format="hex"]').text()).toContain('#bdbde9')
+    await wrapper.get('[data-color-format="hex"]').trigger('click')
+    await flushPromises()
+    expect(api.copyColor).toHaveBeenCalledWith('color', 'hex')
+    expect(api.copyItem).not.toHaveBeenCalled()
+    expect(api.hideWindow).not.toHaveBeenCalled()
+    expect(buffer.clipboardHistory[0].data).toBe('#bdbde9')
+    expect(buffer.clipboardHistory[1].data).toBe('rgb(189, 189, 233)')
+    expect(buffer.clipboardHistory[0].params.tags).toContainEqual({ code: 'type', value: 'Цвет' })
+    expect(wrapper.find('.color-dialog').exists()).toBe(false)
+    expect(wrapper.get('#record-converted').attributes('aria-pressed')).toBe('true')
+    expect(document.activeElement).toBe(wrapper.get('#record-converted').element)
+  })
+  it('keeps dialog keys and focus out of history shortcuts, and closes on cancel', async () => {
+    const { wrapper, api } = await setup([item('color', '#abc')])
+    await wrapper.get('.color-swatch').trigger('click')
+    const action = wrapper.get('[data-color-format="rgb"]')
+    ;(action.element as HTMLButtonElement).focus()
+    for (const key of ['f', ' ', 'Enter', 'Delete', 'ArrowDown', 'Escape']) await action.trigger('keydown', { key })
+    window.dispatchEvent(new Event('focus'))
+    expect(document.activeElement).toBe(action.element)
+    expect(wrapper.get('input').element.value).toBe('')
+    expect(api.copyItem).not.toHaveBeenCalled()
+    expect(api.deleteItem).not.toHaveBeenCalled()
+    expect(api.hideWindow).not.toHaveBeenCalled()
+    await wrapper.get('.color-dialog').trigger('cancel')
+    expect(wrapper.find('.color-dialog').exists()).toBe(false)
+  })
+  it('shows copy failures without reporting success and allows retry', async () => {
+    const { wrapper, api } = await setup([item('color', '#abc')])
+    vi.mocked(api.copyColor).mockRejectedValueOnce(new Error('fixture'))
+    await wrapper.get('.color-swatch').trigger('click')
+    await wrapper.get('[data-color-format="hex"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.color-dialog [role="alert"]').text()).toContain('Не удалось скопировать цвет')
+    expect(wrapper.get('.color-dialog [role="status"]').text()).not.toContain('скопирован')
+    await wrapper.get('[data-color-format="hex"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.color-dialog').exists()).toBe(false)
+  })
+  it('closes stale conversions after removal or a new window invocation', async () => {
+    const { wrapper } = await setup([item('color', '#abc')])
+    await wrapper.get('.color-swatch').trigger('click')
+    emitState(state([item('other')], 2)); await flushPromises()
+    expect(wrapper.find('.color-dialog').exists()).toBe(false)
+    emitState(state([item('color', '#abc')], 3)); await flushPromises()
+    await wrapper.get('.color-swatch').trigger('click')
+    emitShown(); await flushPromises()
+    expect(wrapper.find('.color-dialog').exists()).toBe(false)
+  })
+})
+
+describe('file locations', () => {
+  it('offers both actions from a single icon and adds a copied path as text', async () => {
+    const record = item('files', 'C:/Docs/archive.zip\nC:/Projects/folder')
+    record.type = record.params.type = 'file'
+    record.fileUris = ['file:///C:/Docs/archive.zip', 'file:///C:/Projects/folder']
+    record.fileKinds = ['file', 'folder']
+    record.params.size = '1 файл, 1 папка'
+    const { wrapper, api, buffer } = await setup([record])
+    const buttons = wrapper.findAll('.file-location')
+    expect(buttons).toHaveLength(2)
+    expect(buttons[0].attributes('title')).toBe('Скопировать путь или открыть в Проводнике: C:\\Docs\\archive.zip')
+    expect(buttons[1].attributes('aria-label')).toContain('Папка.')
+    expect(wrapper.find('.copy-file-path').exists()).toBe(false)
+    await buttons[1].trigger('click'); await flushPromises()
+    expect(api.revealFile).not.toHaveBeenCalled()
+    expect(wrapper.get('#file-actions-title').text()).toBe('Папка')
+    expect(wrapper.get('#file-actions-path').text()).toBe('C:\\Projects\\folder')
+    await wrapper.get('.reveal-file').trigger('click'); await flushPromises()
+    expect(api.revealFile).toHaveBeenCalledWith('files', 1)
+    expect(wrapper.find('.file-actions').exists()).toBe(false)
+    expect(api.copyItem).not.toHaveBeenCalled()
+    expect(api.hideWindow).not.toHaveBeenCalled()
+    await buttons[1].trigger('click'); await flushPromises()
+    await wrapper.get('.copy-file-path').trigger('click'); await flushPromises()
+    expect(api.copyFilePath).toHaveBeenCalledWith('files', 1)
+    expect(wrapper.find('.file-actions').exists()).toBe(false)
+    expect(buffer.clipboardHistory[0].data).toBe('C:\\Projects\\folder')
+    expect(buffer.clipboardHistory[0].type).toBe('text')
+    expect(buffer.clipboardHistory[0].fileUris).toBeUndefined()
+    expect(wrapper.get('#record-copied-path').attributes('aria-pressed')).toBe('true')
+    expect(api.revealFile).toHaveBeenCalledTimes(1)
+    expect(api.copyItem).not.toHaveBeenCalled()
+    expect(api.hideWindow).not.toHaveBeenCalled()
+    vi.mocked(api.revealFile).mockResolvedValueOnce({ status: 'missing', message: 'Папка больше не существует.' })
+    await buttons[1].trigger('click'); await flushPromises()
+    await wrapper.get('.reveal-file').trigger('click'); await flushPromises()
+    expect(wrapper.get('.file-actions [role="alert"]').text()).toBe('Папка больше не существует.')
+    vi.mocked(api.copyFilePath).mockRejectedValueOnce(new Error('fixture denied'))
+    await wrapper.get('.copy-file-path').trigger('click'); await flushPromises()
+    expect(wrapper.get('.file-actions [role="alert"]').text()).toContain('Не удалось скопировать путь')
+    for (const key of ['f', 'Delete', 'ArrowDown', 'Enter']) await wrapper.get('.copy-file-path').trigger('keydown', { key })
+    expect(wrapper.get('input').element.value).toBe('')
+    expect(api.deleteItem).not.toHaveBeenCalled()
+    await wrapper.get('.file-actions').trigger('cancel')
+    expect(wrapper.find('.file-actions').exists()).toBe(false)
+    expect(api.hideWindow).not.toHaveBeenCalled()
+  })
+})
 
 describe('search and navigation', () => {
   it.each([['.record-select', 'я'], ['.preview-button', '#'], ['header .icon-button', ' '], ['main', '🙂']])('starts search from %s without losing or duplicating %s', async (target, key) => {
@@ -235,11 +369,11 @@ describe('search and navigation', () => {
     expect(wrapper.find('[aria-label="Выбранные фильтры"]').exists()).toBe(false)
     expect(wrapper.get('dialog [role="alert"]').text()).toContain('Версия не сохранена')
   })
-  it('shows file names in cards and complete paths in a read-only document preview', async () => {
+  it('shows file names in cards and complete paths in a read-only file preview', async () => {
     const record = item('files', 'C:/Docs/report.pdf\nC:/Docs/table.xlsx')
-    record.type = record.params.type = 'document'
+    record.type = record.params.type = 'file'
     record.fileUris = ['file:///C:/Docs/report.pdf', 'file:///C:/Docs/table.xlsx']
-    record.params.tags = [{ code: 'type', value: 'Документ' }]
+    record.params.tags = [{ code: 'type', value: 'Файлы и папки' }]
     const { wrapper, api } = await setup([record])
     expect(wrapper.get('.text-preview').text()).toContain('report.pdf')
     expect(wrapper.get('.text-preview').text()).not.toContain('C:/Docs')
@@ -329,6 +463,66 @@ describe('search and navigation', () => {
     await flushPromises()
     expect(api.hideWindow).not.toHaveBeenCalled()
     expect(wrapper.get('[role="alert"]').text()).toContain('Не удалось скопировать')
+  })
+  it.each(['missing', 'unavailable'] as const)('keeps the window open and explains a %s file copy', async status => {
+    const record = item('files', 'C:/missing.zip')
+    record.type = record.params.type = 'file'
+    record.fileUris = ['file:///C:/missing.zip']
+    const { wrapper, api } = await setup([record])
+    const message = 'Файл или папка недоступны: missing.zip'
+    vi.mocked(api.copyItem).mockResolvedValueOnce({ status, message })
+    await wrapper.get('.record-select').trigger('click')
+    await flushPromises()
+    expect(api.hideWindow).not.toHaveBeenCalled()
+    expect(wrapper.get('[role="alert"]').text()).toBe(message)
+    expect(wrapper.get('.file-unavailable').attributes('title')).toBe(message)
+  })
+  it('checks only visible file records, caches scrolling checks and places an explanation icon after the source', async () => {
+    const record = item('files', 'C:/Downloads/folder/')
+    record.type = record.params.type = 'file'
+    record.fileUris = ['file:///C:/Downloads/folder/']
+    const { wrapper, api } = await setup([record])
+    const entry = { target: wrapper.get('[data-file-id]').element, isIntersecting: true } as IntersectionObserverEntry
+    const message = 'Файл или папка больше не существует: folder.'
+    expect(wrapper.get('.text-preview').text()).toBe('folder')
+    expect(api.checkFiles).not.toHaveBeenCalled()
+    vi.mocked(api.checkFiles).mockResolvedValueOnce({ status: 'missing', message })
+    intersect([entry], {} as IntersectionObserver)
+    await flushPromises()
+    expect(api.checkFiles).toHaveBeenCalledWith('files')
+    const icon = wrapper.get('.file-unavailable')
+    expect(icon.attributes('title')).toBe(message)
+    expect(icon.element.previousElementSibling?.textContent).toBe('Fixture: app')
+    await wrapper.get('.history-list').trigger('scroll')
+    await flushPromises()
+    expect(api.checkFiles).toHaveBeenCalledTimes(1)
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 6000)
+    await wrapper.get('.history-list').trigger('scroll')
+    await flushPromises()
+    expect(api.checkFiles).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('.file-unavailable').exists()).toBe(false)
+    // A fresh manual check still happens even while the background result is cached.
+    await wrapper.get('.record-select').trigger('click')
+    await flushPromises()
+    expect(api.copyItem).toHaveBeenCalledWith('files')
+    expect(wrapper.find('.file-unavailable').exists()).toBe(false)
+  })
+  it('keeps a newer manual failure when an older background check completes late', async () => {
+    const record = item('files', 'C:/removed.zip')
+    record.type = record.params.type = 'file'
+    record.fileUris = ['file:///C:/removed.zip']
+    const { wrapper, api } = await setup([record])
+    let finish!: (result: Awaited<ReturnType<ElectronAPI['checkFiles']>>) => void
+    vi.mocked(api.checkFiles).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    intersect([{ target: wrapper.get('[data-file-id]').element, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
+    const message = 'Файл больше не существует: removed.zip'
+    vi.mocked(api.copyItem).mockResolvedValueOnce({ status: 'missing', message })
+    await wrapper.get('.record-select').trigger('click')
+    await flushPromises()
+    finish({ status: 'available', message: 'Earlier check' })
+    await flushPromises()
+    expect(wrapper.get('.file-unavailable').attributes('title')).toBe(message)
+    expect(api.hideWindow).not.toHaveBeenCalled()
   })
   it('waits for copy completion before hiding', async () => {
     const { wrapper, api } = await setup()
