@@ -25,6 +25,11 @@ async function transferHistory(mode: 'import' | 'export') {
 }
 const ordinaryCount = computed(() => buffer.clipboardHistory.filter(item => !item.pinned).length)
 const favoriteCount = computed(() => buffer.clipboardHistory.filter(item => item.pinned).length)
+const exportCounts = computed(() => ({
+  text: buffer.clipboardHistory.filter(item => item.type !== 'image' && !item.fileUris).length,
+  images: buffer.clipboardHistory.filter(item => item.type === 'image').length,
+  files: buffer.clipboardHistory.filter(item => item.fileUris).length,
+}))
 async function confirmClear() {
   await save()
   await nextTick()
@@ -128,6 +133,12 @@ onBeforeUnmount(() => { disposed = true; cancelTimer(); void save(); clearDialog
         <div class="mt-2 border-t border-line pt-3">
           <h3 class="mb-1 text-[13px] font-semibold">Импорт и экспорт</h3>
           <p class="text-xs leading-relaxed text-muted">История, избранное и настройки в обычном JSON без шифрования. Версия манифеста — {{ BACKUP_MANIFEST_VERSION }}. Изображения включены; файлы и папки сохраняются только как пути.</p>
+          <p class="mt-2 text-xs leading-relaxed text-muted">Экспортируются все сохранённые записи, включая избранные. Отдельного лимита на количество текстов при экспорте нет. Поиск и фильтры не влияют на состав файла.</p>
+          <dl class="mt-2 grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 text-xs leading-relaxed" aria-label="Сколько записей войдёт в экспорт">
+            <dt class="text-muted">Текстовые записи, включая ссылки и цвета</dt><dd class="tabular-nums">{{ exportCounts.text.toLocaleString('ru-RU') }}</dd>
+            <dt class="text-muted">Изображения</dt><dd class="tabular-nums">{{ exportCounts.images.toLocaleString('ru-RU') }}</dd>
+            <dt class="text-muted">Записи с файлами и папками</dt><dd class="tabular-nums">{{ exportCounts.files.toLocaleString('ru-RU') }}</dd>
+          </dl>
           <div class="my-3 flex flex-wrap gap-2">
             <button type="button" class="export-history-button primary-button border border-accent/20 bg-accent/10 text-accent hover:bg-accent/20" :disabled="buffer.busy || buffer.loading" @click="transferHistory('export')"><AppIcon :path="mdiExport" class="size-4" />Экспорт JSON…</button>
             <button type="button" class="import-history-button primary-button border border-line bg-canvas hover:bg-selected" :disabled="buffer.busy || buffer.loading" @click="transferHistory('import')"><AppIcon :path="mdiImport" class="size-4" />Импорт JSON…</button>
@@ -136,7 +147,11 @@ onBeforeUnmount(() => { disposed = true; cancelTimer(); void save(); clearDialog
             <input v-model="importSettings" class="import-settings mt-0.5 accent-accent" type="checkbox" :disabled="buffer.busy || buffer.loading" />
             Применить настройки из файла при импорте
           </label>
-          <p class="mt-2 text-xs leading-relaxed text-muted">Импорт объединяет истории без дубликатов. Действуют лимит записей и общий объём 32 МБ: более старые обычные записи могут быть удалены. Текущие избранные имеют приоритет.</p>
+          <div class="mt-3 space-y-2 text-xs leading-relaxed text-muted">
+            <p><strong class="font-medium text-ink">Изображения:</strong> до 8 МБ на одно изображение в сохранённом виде и до 16 мегапикселей. Все записи вместе, включая текст и избранное, занимают не более 32 МБ. Если других записей нет, это примерно 32 изображения по 1 МБ или 4 по 8 МБ. Эти ограничения действуют и при экспорте, и при импорте.</p>
+            <p><strong class="font-medium text-ink">Размер JSON:</strong> до 256 МБ. Сам файл может быть больше 32 МБ из-за оформления JSON и служебных сведений; лимит 32 МБ относится к содержимому истории.</p>
+            <p><strong class="font-medium text-ink">Импорт:</strong> записи объединяются без дубликатов. Если в файле превышен лимит объёма или размеров изображения, весь импорт отклоняется без изменения текущей истории. При объединении двух допустимых историй действуют текущий лимит записей и общий объём 32 МБ: старые обычные записи могут быть удалены, а часть импортируемых — не добавлена. Текущие избранные имеют приоритет.</p>
+          </div>
         </div>
         <div class="mt-2 border-t border-line pt-3">
           <h3 class="mb-1 text-[13px] font-semibold">Очистка истории</h3>
