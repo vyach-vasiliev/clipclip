@@ -1,4 +1,6 @@
 import type { ColorFormat } from './colors'
+import type { ShortcutSettings } from './shortcuts'
+import type { BackupResult } from './backup'
 
 export type ClipboardKind = 'text' | 'image' | 'document' | 'link' | 'file' | 'color'
 export type FileKind = 'file' | 'folder' | 'unknown'
@@ -26,6 +28,7 @@ export interface ClipboardHistoryItem {
   fileUris?: string[]
   fileKinds?: FileKind[]
   textOrigin?: 'file-path'
+  pinned?: boolean
   createdAt: number
   params: {
     size: string
@@ -53,6 +56,7 @@ export interface HistoryState {
   revision: number
   items: ClipboardHistoryItem[]
   historyLimit: number
+  shortcuts: ShortcutSettings
   paused: boolean
   canUndo: boolean
   persistent: boolean
@@ -73,6 +77,12 @@ export interface ElectronAPI {
   undoDelete(): Promise<void>
   setPaused(paused: boolean): Promise<void>
   setHistoryLimit(limit: number): Promise<void>
+  setPinned(id: string, pinned: boolean): Promise<void>
+  clearHistory(): Promise<void>
+  exportHistory(): Promise<BackupResult>
+  importHistory(includeSettings: boolean): Promise<BackupResult>
+  setShortcuts(shortcuts: ShortcutSettings): Promise<void>
+  setShortcutCapture(active: boolean): Promise<void>
   hideWindow(): Promise<void>
   setPreviewFullscreen(fullscreen: boolean): Promise<void>
   onPreviewFullscreenChanged(callback: (fullscreen: boolean) => void): () => void
@@ -92,6 +102,12 @@ export const CHANNELS = {
   undoDelete: 'history:undo',
   setPaused: 'history:pause',
   setHistoryLimit: 'history:set-limit',
+  setPinned: 'history:set-pinned',
+  clearHistory: 'history:clear',
+  exportHistory: 'history:export',
+  importHistory: 'history:import',
+  setShortcuts: 'settings:shortcuts',
+  setShortcutCapture: 'settings:shortcut-capture',
   hideWindow: 'window:hide',
   windowShown: 'window:shown',
   setPreviewFullscreen: 'window:preview-fullscreen',
@@ -127,6 +143,7 @@ export function isHistoryItem(value: unknown): value is ClipboardHistoryItem {
   if (!value || typeof value !== 'object') return false
   const item = value as ClipboardHistoryItem
   return typeof item.id === 'string' && item.id.length > 0 && item.id.length <= 100
+    && (item.pinned === undefined || typeof item.pinned === 'boolean')
     && ['text', 'image', 'document', 'link', 'file', 'color'].includes(item.type)
     && typeof item.data === 'string' && item.data.length <= MAX_ITEM_BYTES
     && (item.type !== 'image' || /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(item.data))

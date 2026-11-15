@@ -13,6 +13,5 @@ declare module 'virtual:clipclip-licenses' {
     appLicense: string
     components: { name: string; version: string; license: string; text: string }[]
   }
-  export const electronNoticesUrl: string
   export default about
 }

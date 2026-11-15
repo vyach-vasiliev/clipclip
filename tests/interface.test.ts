@@ -8,6 +8,7 @@ import { adjacentId, filterHistory, highlightParts, historyTags } from '../src/u
 import type { ClipboardHistoryItem, ElectronAPI, HistoryState } from '../shared/clipboard'
 import { convertColor } from '../shared/colors'
 import { filePathLabel } from '../shared/files'
+import { DEFAULT_SHORTCUTS } from '../shared/shortcuts'
 
 const wrappers: VueWrapper[] = []
 let emitState: (state: HistoryState) => void
@@ -19,7 +20,7 @@ const item = (id: string, data = 'fixture [ bracket.\nsecond line'): ClipboardHi
     tags: [{ code: 'source', value: 'Fixture: app' }, { code: 'type', value: 'Текст' }] },
 })
 const state = (items = [item('first')], revision = 1): HistoryState => ({
-  revision, items, historyLimit: 100, paused: false, persistent: true, canUndo: false, shortcutAvailable: true, error: null,
+  revision, items, historyLimit: 100, shortcuts: { ...DEFAULT_SHORTCUTS }, paused: false, persistent: true, canUndo: false, shortcutAvailable: true, error: null,
 })
 async function setup(items?: ClipboardHistoryItem[]) {
   const api: ElectronAPI = {
@@ -46,6 +47,12 @@ async function setup(items?: ClipboardHistoryItem[]) {
     deleteItem: vi.fn(async () => {}), undoDelete: vi.fn(async () => {}),
     checkFiles: vi.fn(async () => ({ status: 'available' as const, message: 'Все файлы и папки доступны.' })),
     saveTextRevision: vi.fn(async (_id, text) => item('edited', text)),
+    setPinned: vi.fn(async (id, pinned) => { emitState(state((items ?? [item('first')]).map(record => record.id === id ? { ...record, pinned } : record), 2)) }),
+    clearHistory: vi.fn(async () => { emitState(state([], 2)) }),
+    exportHistory: vi.fn(async () => ({ status: 'success' as const, message: 'Экспорт завершён.' })),
+    importHistory: vi.fn(async () => ({ status: 'success' as const, message: 'Добавлено: 2. Дубликатов: 1.' })),
+    setShortcuts: vi.fn(async shortcuts => { emitState({ ...state(items, 2), shortcuts }) }),
+    setShortcutCapture: vi.fn(async () => {}),
     setHistoryLimit: vi.fn(async limit => { emitState({ ...state(items, 2), historyLimit: limit }) }),
     setPaused: vi.fn(async () => {}), hideWindow: vi.fn(async () => {}),
     setPreviewFullscreen: vi.fn(async () => {}), onPreviewFullscreenChanged: vi.fn(() => vi.fn()),
@@ -75,6 +82,76 @@ beforeEach(() => {
 afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); document.body.innerHTML = ''; delete window.electronAPI; vi.useRealTimers(); vi.unstubAllGlobals() })
 
 describe('settings', () => {
+  it('exports JSON and imports with optional settings, showing the result at the top', async () => {
+    const { wrapper, api } = await setup()
+    await wrapper.get('.settings-button').trigger('click')
+    await vi.dynamicImportSettled()
+    expect(wrapper.get('#settings-general').text()).toContain('без шифрования')
+    await wrapper.get('.export-history-button').trigger('click'); await flushPromises()
+    expect(api.exportHistory).toHaveBeenCalledOnce()
+    expect(wrapper.get('.settings-notice').text()).toContain('Экспорт завершён')
+    await wrapper.get('.import-history-button').trigger('click'); await flushPromises()
+    expect(api.importHistory).toHaveBeenLastCalledWith(false)
+    expect(wrapper.get('.settings-notice').text()).toContain('Добавлено: 2')
+    await wrapper.get('.import-settings').setValue(true)
+    await wrapper.get('.import-history-button').trigger('click'); await flushPromises()
+    expect(api.importHistory).toHaveBeenLastCalledWith(true)
+  })
+  it('handles cancelled dialogs, rejected manifests and a pending transfer', async () => {
+    const { wrapper, api, buffer } = await setup()
+    await wrapper.get('.settings-button').trigger('click'); await vi.dynamicImportSettled()
+    vi.mocked(api.importHistory).mockResolvedValueOnce({ status: 'cancelled' })
+    await wrapper.get('.import-history-button').trigger('click'); await flushPromises()
+    expect(buffer.error).toBeNull()
+    expect(wrapper.get('.settings-notice').text()).not.toContain('Добавлено:')
+    let finish!: (result: { status: 'error'; message: string }) => void
+    vi.mocked(api.importHistory).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    await wrapper.get('.import-history-button').trigger('click'); await flushPromises()
+    expect(wrapper.get('.export-history-button').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('.import-settings').attributes('disabled')).toBeDefined()
+    finish({ status: 'error', message: 'Версия манифеста не поддерживается.' }); await flushPromises()
+    expect(wrapper.get('.settings-notice [role="alert"]').text()).toContain('Версия манифеста не поддерживается')
+    expect(buffer.clipboardHistory).toHaveLength(1)
+    expect(wrapper.get('.export-history-button').attributes('disabled')).toBeUndefined()
+  })
+  it('requires confirmation before clearing history and supports cancellation', async () => {
+    const { wrapper, api } = await setup()
+    await wrapper.get('.settings-button').trigger('click')
+    await vi.dynamicImportSettled()
+    await wrapper.get('.clear-history-button').trigger('click')
+    await flushPromises()
+    expect(api.clearHistory).not.toHaveBeenCalled()
+    expect(wrapper.get('.clear-history-confirm').text()).toContain('Отменить очистку нельзя')
+    await wrapper.get('.cancel-clear').trigger('click')
+    expect(api.clearHistory).not.toHaveBeenCalled()
+    await wrapper.get('.clear-history-button').trigger('click')
+    await wrapper.get('.confirm-clear').trigger('click')
+    await flushPromises()
+    expect(api.clearHistory).toHaveBeenCalledOnce()
+    expect(wrapper.get('.settings-notice').text()).toContain('История очищена')
+    expect(wrapper.get('.clear-history-button').attributes('disabled')).toBeDefined()
+  })
+  it('records shortcut changes automatically and rejects duplicates', async () => {
+    const { wrapper, api, buffer } = await setup()
+    await wrapper.get('.settings-button').trigger('click')
+    await vi.dynamicImportSettled()
+    await wrapper.get('#settings-shortcuts-tab').trigger('click')
+    const binding = wrapper.get('[data-shortcut-action="copySelected"]')
+    await binding.trigger('click'); await flushPromises()
+    expect(api.setShortcutCapture).toHaveBeenLastCalledWith(true)
+    await binding.trigger('keydown', { key: 'Enter', code: 'Enter', ctrlKey: true })
+    expect(api.setShortcuts).not.toHaveBeenCalled()
+    expect(wrapper.get('#settings-shortcuts [role="alert"]').text()).toContain('разные сочетания')
+    await binding.trigger('keydown', { key: 'F8', code: 'F8' }); await flushPromises()
+    expect(buffer.shortcuts.copySelected).toBe('F8')
+    expect(api.setShortcutCapture).toHaveBeenLastCalledWith(false)
+    expect(wrapper.get('.settings-notice').text()).toContain('Горячие клавиши применены')
+    await wrapper.get('[aria-label="Закрыть настройки"]').trigger('click'); await flushPromises()
+    await wrapper.get('input').trigger('keydown', { key: 'Enter', code: 'Enter' })
+    expect(api.copyItem).not.toHaveBeenCalled()
+    await wrapper.get('input').trigger('keydown', { key: 'F8', code: 'F8' }); await flushPromises()
+    expect(api.copyItem).toHaveBeenCalledWith('first')
+  })
   it('automatically applies the completed input and rejects invalid limits without a save button', async () => {
     const { wrapper, api, buffer } = await setup()
     await wrapper.get('.settings-button').trigger('click')
@@ -159,22 +236,52 @@ describe('settings', () => {
     await wrapper.get('.settings-button').trigger('click')
     await vi.dynamicImportSettled()
     await flushPromises()
-    await wrapper.get('#settings-general-tab').trigger('keydown', { key: 'ArrowRight' })
+    await wrapper.get('#settings-general-tab').trigger('keydown', { key: 'End' })
     expect(wrapper.get('#settings-about-tab').attributes('aria-selected')).toBe('true')
     expect(document.activeElement?.id).toBe('settings-about-tab')
     const about = wrapper.get('#settings-about')
-    expect(about.text()).toContain('28.1.0')
+    expect(about.text()).toContain('2.0.0')
     expect(about.text()).toContain('Vasilev Viacheslav')
     expect(wrapper.get('#settings-about-tab').text()).toBe('О программе')
     expect(about.get('.license-text').text()).toContain('Copyright (c) 2026 Vasilev Viacheslav')
     expect(about.get('.license-text').text()).not.toContain('草鞋没号')
-    expect(about.findAll('.license-disclosure').length).toBeGreaterThan(10)
+    expect(about.findAll('.license-disclosure')).toHaveLength(10)
+    expect(about.find('.electron-notices').exists()).toBe(false)
+    expect(about.text()).not.toContain('@babel/helper-string-parser')
     expect(about.get('.license-disclosure').attributes('open')).toBeUndefined()
     expect(about.get('.license-text').text()).toContain('Permission is hereby granted')
     expect(about.findAll('a')).toHaveLength(0)
     await wrapper.get('#settings-about-tab').trigger('keydown', { key: 'Home' })
     expect(wrapper.get('#settings-general-tab').attributes('aria-selected')).toBe('true')
     expect(api.copyItem).not.toHaveBeenCalled()
+  })
+})
+
+describe('favorites', () => {
+  it('pins favorites above ordinary records and filters them without copying', async () => {
+    const { wrapper, api } = await setup([item('first'), item('second')])
+    await wrapper.get('#record-second').element.closest('article')!.querySelector<HTMLButtonElement>('.favorite-button')!.click()
+    await flushPromises()
+    expect(api.setPinned).toHaveBeenCalledWith('second', true)
+    expect(api.copyItem).not.toHaveBeenCalled()
+    expect(wrapper.findAll('.record-select').map(record => record.attributes('id'))).toEqual(['record-second', 'record-first'])
+    await wrapper.get('.history-favorites').trigger('click')
+    expect(wrapper.findAll('.record-select')).toHaveLength(1)
+    expect(wrapper.get('.favorite-button').attributes('aria-pressed')).toBe('true')
+    await wrapper.get('.favorite-button').trigger('click'); await flushPromises()
+    expect(wrapper.findAll('.record-select')).toHaveLength(0)
+    expect(wrapper.text()).toContain('В избранном пока пусто')
+  })
+  it('runs configured actions without typing into search and preserves text editing', async () => {
+    const { wrapper, api } = await setup()
+    const input = wrapper.get('input')
+    await input.trigger('keydown', { key: 'в', code: 'KeyD', ctrlKey: true }); await flushPromises()
+    expect(api.setPinned).toHaveBeenCalledWith('first', true)
+    expect((input.element as HTMLInputElement).value).toBe('')
+    await input.trigger('keydown', { key: 'Delete', code: 'Delete' })
+    expect(api.deleteItem).not.toHaveBeenCalled()
+    await input.trigger('keydown', { key: 'P', code: 'KeyP', ctrlKey: true, shiftKey: true }); await flushPromises()
+    expect(api.setPaused).toHaveBeenCalledWith(true)
   })
 })
 
@@ -239,6 +346,30 @@ describe('color conversion', () => {
 })
 
 describe('file locations', () => {
+  it.each(['file', 'folder'] as const)('dismisses %s actions only for a click that starts and ends outside', async kind => {
+    const record = item('files', 'C:/Docs/item')
+    record.type = record.params.type = 'file'
+    record.fileUris = ['file:///C:/Docs/item']
+    record.fileKinds = [kind]
+    const { wrapper, api } = await setup([record])
+    await wrapper.get('.file-location').trigger('click'); await flushPromises()
+    const dialog = wrapper.get('.file-actions')
+    vi.spyOn(dialog.element, 'getBoundingClientRect').mockReturnValue(new DOMRect(20, 20, 280, 180))
+    dialog.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 25, clientY: 25 }))
+    await dialog.trigger('click', { clientX: 25, clientY: 25 })
+    expect(wrapper.find('.file-actions').exists()).toBe(true)
+    wrapper.get('#file-actions-path').element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 30, clientY: 60 }))
+    await dialog.trigger('click', { clientX: 5, clientY: 5 })
+    expect(wrapper.find('.file-actions').exists()).toBe(true)
+    dialog.element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, clientX: 5, clientY: 5 }))
+    await dialog.trigger('click', { clientX: 5, clientY: 5 }); await flushPromises()
+    expect(wrapper.find('.file-actions').exists()).toBe(false)
+    expect(api.copyItem).not.toHaveBeenCalled()
+    expect(api.copyFilePath).not.toHaveBeenCalled()
+    expect(api.revealFile).not.toHaveBeenCalled()
+    expect(api.hideWindow).not.toHaveBeenCalled()
+  })
+
   it('offers both actions from a single icon and adds a copied path as text', async () => {
     const record = item('files', 'C:/Docs/archive.zip\nC:/Projects/folder')
     record.type = record.params.type = 'file'

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ClipboardItem, globalShortcut, ipcMain, Menu, nativeImage, net, protocol, safeStorage, session, shell, Tray, type IpcMainInvokeEvent } from 'electron'
+import { app, BrowserWindow, clipboard, ClipboardItem, dialog, globalShortcut, ipcMain, Menu, nativeImage, net, protocol, safeStorage, session, shell, Tray, type IpcMainInvokeEvent } from 'electron'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -6,10 +6,14 @@ import { CHANNELS, MAX_ITEM_BYTES, UNKNOWN_SOURCE, isFileUriList, type Clipboard
 import { ClipboardHistory, ClipboardMonitor } from './history'
 import { EncryptedHistoryStorage } from './storage'
 import { assetPath, isTrustedPage, requireId, requireTextRevision } from './security'
-import { registerWindowsShortcut } from './windowsShortcut'
+import { createWindowsShortcut } from './windowsShortcut'
+import { DEFAULT_SHORTCUTS, restoreShortcuts, shortcutError, shortcutLabel, type ShortcutSettings } from '../../shared/shortcuts'
 import { getWindowsClipboardOwnerReader } from './windowsClipboardSource'
 import { FileChecker } from './files'
 import { convertColor, isColorFormat } from '../../shared/colors'
+import { BackupError, readBackup, serializeBackup, writeBackup } from './backup'
+import type { BackupResult } from '../../shared/backup'
+import { version as appVersion } from '../../package.json'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const rendererRoot = path.join(root, 'dist')
@@ -25,7 +29,9 @@ let win: BrowserWindow | null = null
 let tray: Tray | null = null
 let quitting = false
 let shortcutAvailable = false
-let disposeWindowShortcut: (() => void) | null = null
+let windowShortcut: ReturnType<typeof createWindowsShortcut> | null = null
+let shortcuts: ShortcutSettings = { ...DEFAULT_SHORTCUTS }
+let shortcutCapture = false
 let persistent = false
 let storageError: string | null = null
 let storage: EncryptedHistoryStorage | null = null
@@ -33,6 +39,7 @@ let revision = 0
 let visibilityGeneration = 0
 let trayTransition: Promise<void> = Promise.resolve()
 let cachedImage: { digest: string; image: NonNullable<ClipboardSnapshot['image']> } | null = null
+let transferring = false
 const fileChecker = new FileChecker()
 let devServer = ''
 const requestedDevServer = !app.isPackaged && process.env.VITE_DEV_SERVER_URL
@@ -108,7 +115,7 @@ const history = new ClipboardHistory({ read: readSnapshot, source: getSource,
 const monitor = new ClipboardMonitor(history)
 
 function state(): HistoryState {
-  return { revision, items: history.items, historyLimit: history.historyLimit, paused: history.paused, canUndo: history.canUndo,
+  return { revision, items: history.items, historyLimit: history.historyLimit, shortcuts, paused: history.paused, canUndo: history.canUndo,
     persistent, shortcutAvailable, error: storageError ?? history.error }
 }
 
@@ -118,12 +125,43 @@ function broadcast() {
 }
 
 function updateTray() {
+  tray?.setToolTip('ClipClip — ' + shortcutLabel(shortcuts.openWindow))
   tray?.setContextMenu(Menu.buildFromTemplate([
     { label: 'Открыть ClipClip', click: showWindow },
     { label: history.paused ? 'Продолжить запись' : 'Приостановить запись', click: () => history.setPaused(!history.paused) },
     { type: 'separator' },
     { label: 'Выход', click: () => app.quit() },
   ]))
+}
+
+function saveState() {
+  if (storage) void storage.save({ items: history.items, paused: history.paused, historyLimit: history.historyLimit, shortcuts }).catch(() => {
+    persistent = false
+    storageError = 'Не удалось сохранить историю. Данные этой сессии остаются в памяти.'
+    broadcast()
+  })
+}
+
+function registerGlobalShortcut(accelerator: string): boolean {
+  if (testMode && process.env.CLIPCLIP_TEST_SHORTCUT !== '1') return true
+  try {
+    if (process.platform === 'win32') {
+      if (!win || win.isDestroyed()) return false
+      windowShortcut ??= createWindowsShortcut(win, showWindow)
+      return windowShortcut.set(accelerator)
+    }
+    if (globalShortcut.isRegistered(accelerator)) return true
+    if (!globalShortcut.register(accelerator, showWindow)) return false
+    if (shortcuts.openWindow !== accelerator) globalShortcut.unregister(shortcuts.openWindow)
+    return true
+  } catch { return false }
+}
+
+function finishShortcutCapture() {
+  if (!shortcutCapture) return
+  shortcutCapture = false
+  shortcutAvailable = registerGlobalShortcut(shortcuts.openWindow)
+  broadcast()
 }
 
 function validateSender(event: IpcMainInvokeEvent) {
@@ -235,6 +273,40 @@ function registerIpc() {
   })
   handle(CHANNELS.undoDelete, () => history.undoDelete())
   handle(CHANNELS.setHistoryLimit, value => history.setHistoryLimit(value))
+  handle(CHANNELS.setPinned, value => {
+    if (!value || typeof value !== 'object') throw new Error('Некорректное избранное.')
+    const request = value as { id?: unknown; pinned?: unknown }
+    if (typeof request.pinned !== 'boolean') throw new Error('Некорректное избранное.')
+    history.setPinned(requireId(request.id), request.pinned)
+  })
+  handle(CHANNELS.clearHistory, () => history.clear())
+  handle(CHANNELS.exportHistory, () => transferHistory('export'))
+  handle(CHANNELS.importHistory, value => {
+    if (typeof value !== 'boolean') throw new Error('Некорректные параметры импорта.')
+    return transferHistory('import', value)
+  })
+  handle(CHANNELS.setShortcuts, value => {
+    const error = shortcutError(value)
+    if (error) throw new Error(error)
+    const next = value as ShortcutSettings
+    if ((next.openWindow !== shortcuts.openWindow || !shortcutAvailable) && !registerGlobalShortcut(next.openWindow)) {
+      throw new Error('Сочетание вызова окна занято другой программой или недоступно. Выберите другое.')
+    }
+    shortcuts = { ...next }
+    shortcutAvailable = true
+    broadcast()
+    updateTray()
+    saveState()
+  })
+  handle(CHANNELS.setShortcutCapture, value => {
+    if (typeof value !== 'boolean') throw new Error('Некорректное состояние настройки клавиш.')
+    if (!value) { finishShortcutCapture(); return }
+    if (shortcutCapture) return
+    shortcutCapture = true
+    windowShortcut?.dispose()
+    windowShortcut = null
+    globalShortcut.unregister(shortcuts.openWindow)
+  })
   handle(CHANNELS.setPaused, value => {
     if (typeof value !== 'boolean') throw new Error('Некорректное состояние записи.')
     history.setPaused(value)
@@ -244,6 +316,50 @@ function registerIpc() {
     return setWindowFullscreen(value)
   })
   handle(CHANNELS.hideWindow, hideWindow)
+}
+
+async function transferHistory(mode: 'import' | 'export', includeSettings = false): Promise<BackupResult> {
+  if (transferring) return { status: 'error', message: 'Дождитесь завершения импорта или экспорта.' }
+  const window = win
+  if (!window || window.isDestroyed()) return { status: 'error', message: 'Окно недоступно.' }
+  transferring = true
+  const filters = [{ name: 'ClipClip JSON', extensions: ['json'] }]
+  try {
+    if (mode === 'export') {
+      const selected = await dialog.showSaveDialog(window, { title: 'Экспорт ClipClip', filters,
+        defaultPath: path.join(app.getPath('documents'), `clipclip-${new Date().toISOString().slice(0, 10)}.json`) })
+      if (selected.canceled || !selected.filePath || window.isDestroyed() || win !== window) return { status: 'cancelled' }
+      const text = serializeBackup(history.items, { historyLimit: history.historyLimit, paused: history.paused, shortcuts }, appVersion)
+      await writeBackup(selected.filePath, text)
+      return { status: 'success', message: 'История, избранное и настройки экспортированы в JSON.' }
+    }
+    const selected = await dialog.showOpenDialog(window, { title: 'Импорт ClipClip', filters, properties: ['openFile'] })
+    if (selected.canceled || !selected.filePaths[0]) return { status: 'cancelled' }
+    const manifest = await readBackup(selected.filePaths[0])
+    // Check dimensions before decoding untrusted image data.
+    for (const item of manifest.history) {
+      if (item.type !== 'image') continue
+      const bytes = Buffer.from(item.data.slice('data:image/png;base64,'.length), 'base64')
+      if (bytes.length < 24 || bytes.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a'
+        || bytes.subarray(12, 16).toString('ascii') !== 'IHDR'
+        || !bytes.readUInt32BE(16) || !bytes.readUInt32BE(20) || bytes.readUInt32BE(16) * bytes.readUInt32BE(20) > 16_000_000
+        || nativeImage.createFromBuffer(bytes).isEmpty()) throw new BackupError('Файл содержит повреждённое изображение или изображение больше 16 мегапикселей.')
+    }
+    if (window.isDestroyed() || win !== window) return { status: 'cancelled' }
+    if (includeSettings) {
+      const next = manifest.settings.shortcuts
+      if ((next.openWindow !== shortcuts.openWindow || !shortcutAvailable) && !registerGlobalShortcut(next.openWindow)) {
+        throw new BackupError('Сочетание вызова окна занято. Импорт не выполнен. Повторите без применения настроек.')
+      }
+      shortcuts = { ...next }
+      shortcutAvailable = true
+    }
+    const result = history.importItems(manifest.history, includeSettings ? manifest.settings : undefined)
+    return { status: 'success', message: `Добавлено: ${result.imported}. Дубликатов: ${result.duplicates}. Не вошло из-за лимитов: ${result.skipped}. Удалено прежних записей по лимитам: ${result.removed}.${includeSettings ? ' Настройки применены.' : ''}` }
+  } catch (error) {
+    return { status: 'error', message: error instanceof BackupError ? error.message
+      : mode === 'export' ? 'Не удалось сохранить JSON. Проверьте доступ к выбранной папке.' : 'Не удалось импортировать JSON. Проверьте файл и доступ к нему.' }
+  } finally { transferring = false }
 }
 
 async function hideWindow() {
@@ -286,6 +402,8 @@ function createWindow() {
   }
   created.on('show', syncTaskbar)
   created.on('hide', syncTaskbar)
+  created.on('blur', finishShortcutCapture)
+  created.on('hide', finishShortcutCapture)
   created.on('minimize', syncTaskbar)
   created.on('restore', syncTaskbar)
   const notifyFullscreen = (fullscreen: boolean) => {
@@ -293,12 +411,7 @@ function createWindow() {
   }
   created.on('enter-full-screen', () => notifyFullscreen(true))
   created.on('leave-full-screen', () => notifyFullscreen(false))
-  if (process.platform === 'win32' && (!testMode || process.env.CLIPCLIP_TEST_SHORTCUT === '1')) {
-    disposeWindowShortcut?.()
-    try { disposeWindowShortcut = registerWindowsShortcut(created, showWindow) }
-    catch { disposeWindowShortcut = null }
-    shortcutAvailable = !!disposeWindowShortcut
-  }
+  shortcutAvailable = registerGlobalShortcut(shortcuts.openWindow)
   created.setMenu(null)
   created.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   created.webContents.on('will-navigate', event => { if (!isTrustedPage(event.url, entry)) event.preventDefault() })
@@ -307,6 +420,8 @@ function createWindow() {
   })
   created.webContents.on('will-attach-webview', event => event.preventDefault())
   created.webContents.on('did-finish-load', broadcast)
+  created.webContents.on('render-process-gone', finishShortcutCapture)
+  created.webContents.on('did-start-loading', finishShortcutCapture)
   created.once('ready-to-show', showWindow)
   created.on('close', event => {
     if (!quitting && process.platform !== 'darwin' && tray) {
@@ -315,8 +430,10 @@ function createWindow() {
     }
   })
   created.on('closed', () => {
-    disposeWindowShortcut?.()
-    disposeWindowShortcut = null
+    shortcutCapture = false
+    windowShortcut?.dispose()
+    windowShortcut = null
+    if (process.platform === 'win32') shortcutAvailable = false
     if (win === created) win = null
   })
   void created.loadURL(entry).catch(() => { storageError = 'Не удалось открыть интерфейс приложения.' })
@@ -349,6 +466,7 @@ async function initialize() {
       })
       const restored = await storage.load()
       history.hydrate(restored.items, restored.paused, restored.historyLimit)
+      shortcuts = restoreShortcuts(restored.shortcuts)
       persistent = true
     }
   } catch {
@@ -359,24 +477,18 @@ async function initialize() {
   history.subscribe(() => {
     broadcast()
     updateTray()
-    if (storage) void storage.save({ items: history.items, paused: history.paused, historyLimit: history.historyLimit }).catch(() => {
-      persistent = false
-      storageError = 'Не удалось сохранить историю. Данные этой сессии остаются в памяти.'
-      broadcast()
-    })
+    saveState()
   })
   registerIpc()
   if (!testMode || process.env.CLIPCLIP_TEST_TRAY === '1') {
     const trayImage = nativeImage.createFromPath(icon)
     if (!trayImage.isEmpty()) try {
       tray = new Tray(trayImage.resize({ width: 20, height: 20 }))
-      tray.setToolTip('ClipClip — Ctrl + Alt + B')
       tray.on('click', toggleTrayWindow)
       updateTray()
       if (testMode) app.emit('clipclip:test:tray-created', tray)
     } catch { tray = null }
   }
-  shortcutAvailable = !testMode && process.platform !== 'win32' && globalShortcut.register('Ctrl+Alt+B', showWindow)
   createWindow()
   monitor.start()
 }
@@ -391,8 +503,8 @@ app.on('before-quit', event => {
   monitor.stop()
   history.dispose()
   globalShortcut.unregisterAll()
-  disposeWindowShortcut?.()
-  disposeWindowShortcut = null
+  windowShortcut?.dispose()
+  windowShortcut = null
   if (storage) {
     event.preventDefault()
     void storage.flush().catch(() => {}).finally(() => app.quit())

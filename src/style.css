@@ -66,7 +66,7 @@
     background: repeating-conic-gradient(#eef0f3 0% 25%, #fff 0% 50%) 0 0 / 8px 8px;
     box-shadow: 0 0 0 1px var(--image-outline);
   }
-  .color-dialog::backdrop, .file-actions::backdrop { background: color-mix(in srgb, var(--ink) 28%, transparent); }
+  .color-dialog::backdrop, .file-actions::backdrop, .clear-history-confirm::backdrop { background: color-mix(in srgb, var(--ink) 28%, transparent); }
 }
 
 /* Chromium-specific controls remain CSS; layout and components use Tailwind. */

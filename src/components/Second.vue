@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, defineAsyncComponent, onMounted, onBeforeUnmount } from 'vue'
-import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck, mdiFullscreen, mdiFullscreenExit, mdiPlus, mdiMinus, mdiFitToScreenOutline, mdiChevronLeft, mdiChevronRight, mdiAlertCircleOutline, mdiCogOutline } from '@mdi/js'
+import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck, mdiFullscreen, mdiFullscreenExit, mdiPlus, mdiMinus, mdiFitToScreenOutline, mdiChevronLeft, mdiChevronRight, mdiAlertCircleOutline, mdiCogOutline, mdiStarOutline, mdiStar } from '@mdi/js'
 import { KIND_LABELS, TAG_LABELS, type ClipboardKind, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
 import { useBufferStore } from '../store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags, isEditingTarget, isActionTarget } from '../utils/history'
@@ -14,10 +14,14 @@ import { colorSwatch } from '../../shared/colors'
 import ColorConverter from './ColorConverter.vue'
 import FileLocations from './FileLocations.vue'
 import FileActions from './FileActions.vue'
+import { shortcutFromEvent, shortcutLabel, type ShortcutAction } from '../../shared/shortcuts'
 
 const SettingsDialog = defineAsyncComponent(() => import('./SettingsDialog.vue'))
 const buffer = useBufferStore()
 const settingsOpen = ref(false)
+const favoritesOnly = ref(false)
+const favorites = computed(() => buffer.clipboardHistory.filter(item => item.pinned))
+const ordinaryCount = computed(() => buffer.clipboardHistory.filter(item => !item.pinned).length)
 const search = ref('')
 const selectedTags = ref<ClipboardTag[]>([])
 const selectedId = ref<string | null>(null)
@@ -71,7 +75,9 @@ let unsubscribeShown: (() => void) | undefined
 let unsubscribeFullscreen: (() => void) | undefined
 let announcementTimer: ReturnType<typeof setTimeout> | undefined
 const allTags = computed(() => historyTags(buffer.clipboardHistory))
-const filtered = computed(() => filterHistory(buffer.clipboardHistory, search.value, selectedTags.value))
+const filtered = computed(() => filterHistory(buffer.clipboardHistory, search.value, selectedTags.value)
+  .filter(item => !favoritesOnly.value || item.pinned)
+  .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned)))
 const historyList = ref<HTMLElement>()
 const { states: fileStates, refresh: refreshFiles, update: updateFileState } = useFileAvailability(filtered, historyList)
 const selected = computed(() => filtered.value.find(item => item.id === selectedId.value))
@@ -98,7 +104,7 @@ function announce(message: string) {
   if (announcementTimer) clearTimeout(announcementTimer)
   announcementTimer = setTimeout(() => { announcement.value = '' }, 4000)
 }
-function clearFilters() { search.value = ''; selectedTags.value = [] }
+function clearFilters() { search.value = ''; selectedTags.value = []; favoritesOnly.value = false }
 function select(item: ClipboardHistoryItem) { selectedId.value = item.id }
 async function openPreview(item: ClipboardHistoryItem) {
   if (!await editor.flush()) return
@@ -206,6 +212,39 @@ async function copyById(id: string, hide = false) {
     if (hide && await dismissPreview()) await buffer.hide()
   }
 }
+async function toggleFavorite(item: ClipboardHistoryItem) {
+  const pinned = !item.pinned
+  if (await buffer.setPinned(item.id, pinned)) announce(pinned ? 'Добавлено в избранное и закреплено.' : 'Убрано из избранного.')
+}
+function runShortcut(action: ShortcutAction) {
+  if (buffer.busy) return
+  if (action === 'copySelected') void copy(selected.value, true)
+  else if (action === 'deleteSelected' && selected.value) void remove(selected.value)
+  else if (action === 'previewSelected' && selected.value) void openPreview(selected.value)
+  else if (action === 'toggleFavorite' && selected.value) void toggleFavorite(selected.value)
+  else if (action === 'togglePause') void buffer.setPaused(!buffer.paused)
+}
+function configuredAction(event: KeyboardEvent) {
+  if (event.defaultPrevented || event.isComposing || event.getModifierState('AltGraph')) return null
+  if (isActionTarget(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey && !/^F\d+$/.test(event.key)) return null
+  const shortcut = shortcutFromEvent(event)
+  const action = (Object.keys(buffer.shortcuts) as ShortcutAction[]).find(action => action !== 'openWindow' && buffer.shortcuts[action] === shortcut)
+  if (!action) return null
+  if (isEditingTarget(event.target)) {
+    if (!(event.target instanceof HTMLInputElement) || event.target.id !== 'history-search') return null
+    if (event.key === 'Delete' && !event.ctrlKey && !event.altKey && !event.metaKey) return null
+  }
+  return action
+}
+function captureConfiguredKeys(event: KeyboardEvent) {
+  if (settingsOpen.value || previewOpen.value || colorItem.value || fileAction.value) return
+  if (!event.ctrlKey && !event.altKey && !event.metaKey && ['Enter', 'Delete'].includes(event.key)) return
+  const action = configuredAction(event)
+  if (!action) return
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  if (!event.repeat) runShortcut(action)
+}
 async function remove(item: ClipboardHistoryItem) {
   if (await buffer.remove(item.id)) announce('Запись удалена. Отмена доступна 10 секунд.')
 }
@@ -254,13 +293,20 @@ function captureSearchPaste(event: ClipboardEvent) {
 }
 function handleKeydown(event: KeyboardEvent) {
   if (settingsOpen.value || colorItem.value || fileAction.value) return
-  if (event.defaultPrevented || event.isComposing || event.ctrlKey || event.altKey || event.metaKey) return
+  if (event.defaultPrevented || event.isComposing) return
+  const action = configuredAction(event)
+  if (action) {
+    event.preventDefault()
+    if (!event.repeat) runShortcut(action)
+    return
+  }
+  if (event.ctrlKey || event.altKey || event.metaKey) return
   const editing = isEditingTarget(event.target)
   const otherAction = isActionTarget(event.target)
   if (event.key === 'Escape') {
     event.preventDefault()
     if (event.repeat) return
-    if (search.value || selectedTags.value.length) { clearFilters(); searchPanel.value?.focus() }
+    if (search.value || selectedTags.value.length || favoritesOnly.value) { clearFilters(); searchPanel.value?.focus() }
     else void buffer.hide()
     return
   }
@@ -268,12 +314,6 @@ function handleKeydown(event: KeyboardEvent) {
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault()
     void move(event.key === 'ArrowDown' ? 1 : -1)
-  } else if (event.key === 'Enter') {
-    event.preventDefault()
-    void copy(selected.value, true)
-  } else if (event.key === 'Delete' && !editing && selected.value) {
-    event.preventDefault()
-    void remove(selected.value)
   }
 }
 function shortText(item: ClipboardHistoryItem) {
@@ -281,6 +321,7 @@ function shortText(item: ClipboardHistoryItem) {
 }
 
 onMounted(() => {
+  document.addEventListener('keydown', captureConfiguredKeys, true)
   document.addEventListener('keydown', capturePreviewKeys, true)
   document.addEventListener('keydown', captureSearchTyping, true)
   document.addEventListener('paste', captureSearchPaste, true)
@@ -291,6 +332,7 @@ onMounted(() => {
   searchPanel.value?.focus()
 })
 onBeforeUnmount(() => {
+  document.removeEventListener('keydown', captureConfiguredKeys, true)
   document.removeEventListener('keydown', capturePreviewKeys, true)
   document.removeEventListener('keydown', captureSearchTyping, true)
   document.removeEventListener('paste', captureSearchPaste, true)
@@ -319,26 +361,30 @@ onBeforeUnmount(() => {
     <p v-if="!buffer.loading && !buffer.persistent" class="shrink-0 text-xs text-muted">История только в памяти этой сессии</p>
     <p v-if="buffer.error" role="alert" class="shrink-0 rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{{ buffer.error }}</p>
     <p v-if="!buffer.loading && !buffer.shortcutAvailable" class="shrink-0 text-xs leading-snug text-accent">
-      Ctrl + Alt + B недоступна. Откройте окно через значок ClipClip.
+      {{ shortcutLabel(buffer.shortcuts.openWindow) }} недоступна. Откройте окно через значок ClipClip.
     </p>
     <SearchPanel ref="searchPanel" v-model="search" v-model:selected-tags="selectedTags" :all-tags="allTags" />
 
     <section class="history-section flex min-h-0 flex-1 flex-col" aria-labelledby="history-title" :aria-busy="buffer.loading">
-      <div class="flex shrink-0 items-center justify-between pb-2">
-        <h2 id="history-title" class="text-xs font-medium text-muted">{{ search || selectedTags.length ? 'Результаты поиска' : 'Последние записи' }}</h2>
-        <span class="text-xs text-muted tabular-nums">{{ filtered.length }} / {{ buffer.historyLimit }}</span>
+      <div class="flex shrink-0 items-center justify-between gap-2 pb-2">
+        <div class="flex gap-0.5" aria-label="Раздел истории">
+          <button type="button" class="history-all text-button px-1.5" :aria-pressed="!favoritesOnly" :class="!favoritesOnly ? 'bg-accent/8' : 'text-muted'" @click="favoritesOnly = false">Все</button>
+          <button type="button" class="history-favorites text-button px-1.5" :aria-pressed="favoritesOnly" :class="favoritesOnly ? 'bg-accent/8' : 'text-muted'" @click="favoritesOnly = true"><AppIcon :path="mdiStarOutline" class="size-4" />Избранное <span class="tabular-nums">{{ favorites.length }}</span></button>
+        </div>
+        <h2 id="history-title" class="sr-only">{{ search || selectedTags.length ? 'Результаты поиска' : favoritesOnly ? 'Избранное' : 'Последние записи' }}</h2>
+        <span class="text-xs text-muted tabular-nums">{{ search || selectedTags.length ? filtered.length + ' найдено' : favoritesOnly ? 'Всего: ' + filtered.length : ordinaryCount + ' / ' + buffer.historyLimit }}</span>
       </div>
       <div v-if="buffer.loading" role="status" class="rounded-lg bg-accent/8 px-3 py-4 text-center text-xs text-muted">Загрузка истории…</div>
       <div v-else-if="!filtered.length" class="empty-state my-auto px-3 py-6 text-center text-muted">
         <AppIcon :path="mdiClipboardTextOutline" class="mx-auto size-10" />
-        <h3 class="mt-2.5 mb-1.5 text-base font-semibold text-ink">{{ search || selectedTags.length ? 'Совпадений нет' : 'История пока пуста' }}</h3>
-        <p class="mb-2.5 text-[13px] text-pretty">{{ search || selectedTags.length ? 'Попробуйте другой запрос или уберите фильтры.' : buffer.paused ? 'Продолжите запись и скопируйте текст, изображение или файл.' : 'Скопируйте текст, изображение, файл или папку — запись появится здесь.' }}</p>
+        <h3 class="mt-2.5 mb-1.5 text-base font-semibold text-ink">{{ search || selectedTags.length ? 'Совпадений нет' : favoritesOnly ? 'В избранном пока пусто' : 'История пока пуста' }}</h3>
+        <p class="mb-2.5 text-[13px] text-pretty">{{ search || selectedTags.length ? 'Попробуйте другой запрос или уберите фильтры.' : favoritesOnly ? 'Нажмите звёздочку у записи, чтобы закрепить её и сохранить сверх лимита истории.' : buffer.paused ? 'Продолжите запись и скопируйте текст, изображение или файл.' : 'Скопируйте текст, изображение, файл или папку — запись появится здесь.' }}</p>
         <button v-if="search || selectedTags.length" type="button" class="text-button" @click="clearFilters">Сбросить поиск и фильтры</button>
       </div>
 
       <ul v-else ref="historyList" class="history-list -mx-0.5 flex min-h-0 flex-col gap-2 overflow-y-auto p-0.5" @scroll.passive="refreshFiles">
         <li v-for="item in filtered" :key="item.id" :data-file-id="item.fileUris ? item.id : undefined">
-          <article class="clipboard-record flex items-center overflow-hidden rounded-lg hover:bg-accent/4 focus-within:bg-accent/10"
+          <article class="clipboard-record group/record relative flex items-center overflow-hidden rounded-lg hover:bg-accent/4 focus-within:bg-accent/10"
             :class="item.id === selectedId ? 'selected bg-selected' : 'bg-surface'">
             <FileLocations v-if="item.fileUris" :item="item" @open="openFileActions(item, $event)" />
             <button v-if="colors[item.id]" type="button" class="color-swatch icon-button ml-1" :disabled="buffer.busy"
@@ -349,15 +395,16 @@ onBeforeUnmount(() => {
             <button :id="'record-' + item.id" type="button" class="record-select block min-h-[78px] min-w-0 flex-1 rounded-md px-3 py-2.5 text-left focus-visible:outline-none disabled:cursor-wait"
               :aria-pressed="item.id === selectedId" :aria-label="'Скопировать и скрыть. ' + recordLabel(item) + ', ' + item.params.source.name" title="Скопировать и скрыть"
               :disabled="buffer.busy" :tabindex="item.id === selectedId ? 0 : -1" @focus="select(item)" @click="select(item); copy(item, true)">
-              <p v-if="item.type !== 'image'" class="text-preview line-clamp-2 text-[13px] leading-snug whitespace-pre-wrap wrap-anywhere">
+              <p v-if="item.type !== 'image'" class="text-preview line-clamp-2 pr-25 text-[13px] leading-snug whitespace-pre-wrap wrap-anywhere">
                 <span v-if="!item.data.trim()" class="text-muted">Пробелы и переносы строк</span>
                 <template v-else v-for="(part, index) in highlightParts(shortText(item), search)" :key="index">
                   <mark v-if="part.matched" class="query-mark rounded-xs bg-accent/18 px-px text-inherit">{{ part.text }}</mark><span v-else>{{ part.text }}</span>
                 </template>
               </p>
-              <img v-else :src="item.data" :alt="'Изображение из буфера, ' + item.params.size" class="image-preview block h-12 max-w-full rounded object-contain" loading="lazy" />
+              <img v-else :src="item.data" :alt="'Изображение из буфера, ' + item.params.size" class="image-preview block h-12 max-w-[calc(100%_-_100px)] rounded object-contain" loading="lazy" />
               <span class="mt-1.5 flex items-center gap-2 text-[11px] leading-snug text-muted">
                 <span class="flex min-w-0 flex-1 items-center gap-1">
+                  <span v-if="item.pinned" class="inline-flex shrink-0 text-accent" role="img" aria-label="В избранном" title="В избранном"><AppIcon :path="mdiStar" class="size-3" /></span>
                   <span class="truncate">{{ item.params.source.name }}</span>
                   <span v-if="item.fileUris && ['missing', 'unavailable'].includes(fileStates[item.id]?.status ?? '')"
                     class="file-unavailable inline-flex shrink-0 text-danger" role="img"
@@ -368,9 +415,12 @@ onBeforeUnmount(() => {
                 <span class="max-w-[40%] shrink-0 truncate">{{ item.params.size }}</span>
               </span>
             </button>
-            <div class="flex flex-col p-0.5">
-              <button type="button" class="preview-button icon-button" :aria-label="'Просмотреть запись. ' + recordLabel(item)" title="Полный просмотр" @click="openPreview(item)"><AppIcon :path="mdiEyeOutline" class="size-[18px]" /></button>
-              <button type="button" class="icon-button hover:text-danger" :disabled="buffer.busy" :aria-label="'Удалить запись. ' + recordLabel(item)" title="Удалить" @click="remove(item)"><AppIcon :path="mdiDeleteOutline" class="size-[18px]" /></button>
+            <div class="record-actions pointer-events-none absolute top-1 right-1 flex items-center gap-0.5 opacity-0 group-hover/record:pointer-events-auto group-hover/record:opacity-100 group-focus-within/record:pointer-events-auto group-focus-within/record:opacity-100" role="group" aria-label="Действия записи">
+              <button type="button" class="favorite-button icon-button size-8" :class="item.pinned ? 'text-accent' : ''"
+                :aria-pressed="!!item.pinned" :aria-label="(item.pinned ? 'Убрать из избранного. ' : 'Добавить в избранное. ') + recordLabel(item)"
+                :title="item.pinned ? 'Убрать из избранного' : 'В избранное — закрепить и сохранить сверх лимита'" :disabled="buffer.busy" @focus="select(item)" @click="toggleFavorite(item)"><AppIcon :path="item.pinned ? mdiStar : mdiStarOutline" class="size-4" /></button>
+              <button type="button" class="preview-button icon-button size-8" :aria-label="'Просмотреть запись. ' + recordLabel(item)" title="Полный просмотр" @click="openPreview(item)"><AppIcon :path="mdiEyeOutline" class="size-4" /></button>
+              <button type="button" class="delete-button icon-button size-8 hover:text-danger" :disabled="buffer.busy" :aria-label="'Удалить запись. ' + recordLabel(item)" title="Удалить" @click="remove(item)"><AppIcon :path="mdiDeleteOutline" class="size-4" /></button>
             </div>
           </article>
         </li>
@@ -383,7 +433,7 @@ onBeforeUnmount(() => {
       <button v-if="buffer.canUndo" type="button" class="text-button" :disabled="buffer.busy" @click="buffer.undo"><AppIcon :path="mdiUndo" class="size-4" />Отменить удаление</button>
     </div>
     <footer class="flex shrink-0 justify-between gap-1.5 border-t border-line pt-2 text-[11px] text-muted" aria-label="Горячие клавиши">
-      <span><kbd>↑</kbd><kbd>↓</kbd> выбор</span><span><kbd>Enter</kbd> копировать</span><span><kbd>Esc</kbd> скрыть</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> выбор</span><span><kbd>{{ shortcutLabel(buffer.shortcuts.copySelected) }}</kbd> копировать</span><span><kbd>Esc</kbd> скрыть</span>
     </footer>
 
     <dialog ref="previewDialog" class="preview-dialog" :class="{ 'is-fullscreen': fullscreen }" aria-labelledby="preview-title" @keydown.stop="handlePreviewKeydown" @cancel.prevent="closePreview">

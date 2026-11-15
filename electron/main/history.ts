@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
 import {
-  HISTORY_LIMIT, MAX_HISTORY_BYTES, MAX_ITEM_BYTES, UNKNOWN_SOURCE, isHistoryItem, isFileUriList, isHistoryLimit, KIND_LABELS,
+  HISTORY_LIMIT, MAX_HISTORY_LIMIT, MAX_HISTORY_BYTES, MAX_ITEM_BYTES, UNKNOWN_SOURCE, isHistoryItem, isFileUriList, isHistoryLimit, KIND_LABELS,
   type ClipboardHistoryItem, type ClipboardSnapshot, type ClipboardSource, type ClipboardKind, type FileKind,
 } from '../../shared/clipboard'
 import { classifyText } from '../../shared/content'
 import { parseColor } from '../../shared/colors'
 import { filePathLabel, fileSummary } from '../../shared/files'
+import type { BackupSettings } from '../../shared/backup'
 
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
 const byteLength = (item: ClipboardHistoryItem) => Buffer.byteLength(item.data, 'utf8') + (item.fileUris ? Buffer.byteLength(JSON.stringify(item.fileUris), 'utf8') : 0)
@@ -23,6 +24,7 @@ export class ClipboardHistory {
   historyLimit = HISTORY_LIMIT
   error: string | null = null
   private busy = false
+  private clearing = false
   private epoch = 0
   private previous: { text: string; image: string; files: string; warning: string } | null = null
   private listeners = new Set<() => void>()
@@ -60,12 +62,91 @@ export class ClipboardHistory {
 
   private trim() {
     let bytes = 0
-    this.items = this.items.filter(item => {
+    let ordinary = 0
+    const kept = new Set<string>()
+    // Reserve space for favorites before admitting ordinary captures.
+    for (const item of [...this.items.filter(item => item.pinned), ...this.items.filter(item => !item.pinned)]) {
       const size = byteLength(item)
-      if (size > MAX_ITEM_BYTES || bytes + size > MAX_HISTORY_BYTES) return false
+      if (size > MAX_ITEM_BYTES || bytes + size > MAX_HISTORY_BYTES || (!item.pinned && ordinary >= this.historyLimit)) continue
       bytes += size
-      return true
-    }).slice(0, this.historyLimit)
+      if (!item.pinned) ordinary++
+      kept.add(item.id)
+    }
+    this.items = this.items.filter(item => kept.has(item.id))
+  }
+
+  importItems(incoming: ClipboardHistoryItem[], settings?: Pick<BackupSettings, 'historyLimit' | 'paused'>) {
+    const key = (item: ClipboardHistoryItem) => digest(JSON.stringify([item.type === 'image', item.data, item.fileUris ?? null]))
+    const currentIds = new Set(this.items.map(item => item.id))
+    const currentPins = new Set(this.items.filter(item => item.pinned).map(item => item.id))
+    const ids = new Set(currentIds)
+    const merged = this.items.map(item => ({ ...item }))
+    const byContent = new Map(merged.map(item => [key(item), item]))
+    const added = new Set<string>()
+    let duplicates = 0
+    for (const original of incoming) {
+      const content = key(original)
+      const existing = byContent.get(content)
+      if (existing) { if (original.pinned) existing.pinned = true; duplicates++; continue }
+      const item = { ...original, id: ids.has(original.id) ? randomUUID() : original.id }
+      ids.add(item.id)
+      added.add(item.id)
+      merged.push(item)
+      byContent.set(content, item)
+    }
+    merged.sort((a, b) => b.createdAt - a.createdAt)
+    let bytes = 0
+    let ordinary = 0
+    let pinned = 0
+    const kept = new Set<string>()
+    const limit = settings?.historyLimit ?? this.historyLimit
+    // Existing favorites keep their reserved space when importing another history.
+    const priority = [...merged.filter(item => currentPins.has(item.id)),
+      ...merged.filter(item => item.pinned && !currentPins.has(item.id)), ...merged.filter(item => !item.pinned)]
+    for (const item of priority) {
+      const size = byteLength(item)
+      if (size > MAX_ITEM_BYTES || bytes + size > MAX_HISTORY_BYTES
+        || (item.pinned ? pinned >= MAX_HISTORY_LIMIT : ordinary >= limit)) continue
+      bytes += size
+      if (item.pinned) pinned++; else ordinary++
+      kept.add(item.id)
+    }
+    this.epoch++
+    this.deleted = null
+    if (this.undoTimer) clearTimeout(this.undoTimer)
+    this.undoTimer = null
+    this.hydrate(merged.filter(item => kept.has(item.id)), settings?.paused ?? this.paused, limit)
+    this.error = null
+    this.notify()
+    const imported = [...added].filter(id => kept.has(id)).length
+    return { imported, duplicates, skipped: added.size - imported,
+      removed: [...currentIds].filter(id => !kept.has(id)).length }
+  }
+
+  setPinned(id: string, pinned: boolean) {
+    const item = this.items.find(item => item.id === id)
+    if (!item) throw new Error('Запись уже удалена.')
+    if (!!item.pinned === pinned) return
+    if (pinned && this.items.filter(item => item.pinned).length >= MAX_HISTORY_LIMIT) throw new Error('Достигнут лимит избранных записей.')
+    item.pinned = pinned
+    this.trim()
+    this.notify()
+  }
+
+  async clear() {
+    if (this.clearing) return
+    this.clearing = true
+    this.epoch++
+    this.items = []
+    this.deleted = null
+    if (this.undoTimer) clearTimeout(this.undoTimer)
+    this.undoTimer = null
+    this.error = null
+    try {
+      // Establish a new baseline without writing to the system clipboard.
+      this.previous = this.fingerprints(await this.deps.read())
+    } catch { /* Deletion still succeeds if the clipboard is temporarily unavailable. */ }
+    finally { this.clearing = false; this.notify() }
   }
 
   setHistoryLimit(limit: unknown) {
@@ -97,6 +178,7 @@ export class ClipboardHistory {
     }
     const item: ClipboardHistoryItem = {
       id: existing?.id ?? randomUUID(), type, data, createdAt: this.deps.now?.() ?? Date.now(),
+      ...(existing?.pinned ? { pinned: true } : {}),
       ...(fileUris ? { fileUris } : {}),
       ...(fileKinds ? { fileKinds } : {}),
       ...(type === 'text' && existing?.textOrigin ? { textOrigin: existing.textOrigin } : {}),
@@ -153,7 +235,7 @@ export class ClipboardHistory {
   }
 
   async capture(): Promise<void> {
-    if (this.busy || this.paused) return
+    if (this.busy || this.clearing || this.paused) return
     this.busy = true
     const epoch = this.epoch
     try {

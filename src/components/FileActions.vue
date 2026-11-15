@@ -12,6 +12,16 @@ const buffer = useBufferStore()
 const dialog = ref<HTMLDialogElement>()
 const path = computed(() => filePathLabel(props.item.fileUris![props.index]))
 const label = computed(() => props.item.fileKinds?.[props.index] === 'folder' ? 'Папка' : 'Файл')
+let pointerStartedOutside = false
+function outside(event: MouseEvent) {
+  if (!dialog.value || event.target !== dialog.value) return false
+  const bounds = dialog.value.getBoundingClientRect()
+  return event.clientX < bounds.left || event.clientX >= bounds.right || event.clientY < bounds.top || event.clientY >= bounds.bottom
+}
+function dismissOutside(event: MouseEvent) {
+  if (pointerStartedOutside && outside(event)) emit('close')
+  pointerStartedOutside = false
+}
 async function copyPath() {
   const item = await buffer.copyFilePath(props.item.id, props.index)
   if (item) emit('copied', item)
@@ -25,7 +35,8 @@ onBeforeUnmount(() => dialog.value?.close())
 
 <template>
   <dialog ref="dialog" class="file-actions m-auto w-[calc(100%_-_24px)] max-w-sm max-h-[calc(100dvh_-_24px)] overflow-y-auto rounded-xl border border-line bg-surface p-3 text-ink shadow-xl"
-    aria-labelledby="file-actions-title" aria-describedby="file-actions-path" @cancel.prevent="emit('close')" @keydown.stop @paste.stop>
+    aria-labelledby="file-actions-title" aria-describedby="file-actions-path" @cancel.prevent="emit('close')" @keydown.stop @paste.stop
+    @pointerdown="pointerStartedOutside = outside($event)" @pointercancel="pointerStartedOutside = false" @click="dismissOutside">
     <header class="mb-2 flex items-center justify-between gap-2">
       <h2 id="file-actions-title" class="text-base font-semibold">{{ label }}</h2>
       <button type="button" class="close-file-actions icon-button" aria-label="Закрыть действия с файлом или папкой" title="Закрыть (Esc)" @click="emit('close')"><AppIcon :path="mdiClose" /></button>

@@ -3,6 +3,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { EncryptedHistoryStorage } from '../electron/main/storage'
+import { DEFAULT_SHORTCUTS } from '../shared/shortcuts'
+import { ClipboardHistory } from '../electron/main/history'
 
 const directories: string[] = []
 async function setup() {
@@ -35,6 +37,19 @@ describe('encrypted persistence', () => {
     const { storage } = await setup()
     await storage.save({ items: [], paused: false, historyLimit: 250 })
     expect(await storage.load()).toEqual({ items: [], paused: false, historyLimit: 250 })
+  })
+  it('round-trips favorites and custom shortcuts with the encrypted history', async () => {
+    const { storage } = await setup()
+    const history = new ClipboardHistory({ read: () => ({ text: 'synthetic favorite', image: null }), source: async () => ({ name: 'Fixture', title: '' }) })
+    await history.capture()
+    history.setPinned(history.items[0].id, true)
+    const shortcuts = { ...DEFAULT_SHORTCUTS, openWindow: 'Ctrl+Shift+Q' }
+    await storage.save({ items: history.items, paused: false, historyLimit: 1, shortcuts })
+    const restored = await storage.load()
+    history.hydrate(restored.items, restored.paused, restored.historyLimit)
+    expect(history.items[0].pinned).toBe(true)
+    expect(restored.shortcuts).toEqual(shortcuts)
+    history.dispose()
   })
   it('serializes rapid updates so older saves cannot overwrite newer ones', async () => {
     const { storage } = await setup()

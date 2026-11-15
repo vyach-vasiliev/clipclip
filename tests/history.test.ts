@@ -14,6 +14,105 @@ function setup(snapshot: ClipboardSnapshot = { text: 'hello', image: null }) {
 afterEach(() => { active.splice(0).forEach(history => history.dispose()); vi.useRealTimers() })
 
 describe('clipboard history', () => {
+  it('merges imports by content, preserves existing IDs, resolves ID collisions and keeps favorites', async () => {
+    const { history, setSnapshot, read } = setup()
+    await history.capture()
+    const original = { ...history.items[0], createdAt: 10 }
+    setSnapshot({ text: 'removed', image: null }); await history.capture(); history.delete(history.items[0].id)
+    const notify = vi.fn(); history.subscribe(notify)
+    const reads = read.mock.calls.length
+    const incoming = [{ ...original, id: 'duplicate', pinned: true },
+      { ...original, data: 'new', createdAt: 20 }, { ...original, id: 'repeated', data: 'new' }]
+    expect(history.importItems(incoming)).toEqual({ imported: 1, duplicates: 2, skipped: 0, removed: 0 })
+    expect(history.items).toHaveLength(2)
+    expect(history.items.find(item => item.data === 'hello')).toMatchObject({ id: original.id, pinned: true })
+    expect(history.items.find(item => item.data === 'new')!.id).not.toBe(original.id)
+    expect(history.canUndo).toBe(false)
+    expect(notify).toHaveBeenCalledOnce()
+    expect(read.mock.calls).toHaveLength(reads)
+    await history.capture()
+    expect(history.items).toHaveLength(2)
+    expect(history.importItems(incoming)).toEqual({ imported: 0, duplicates: 3, skipped: 0, removed: 0 })
+  })
+  it('uses selected import settings and reports records omitted by count and byte budgets', async () => {
+    const { history } = setup(); await history.capture()
+    const original = history.items[0]
+    history.setPinned(original.id, true)
+    history.setHistoryLimit(1)
+    const incoming = Array.from({ length: 3 }, (_, index) => ({ ...original, id: String(index), data: String(index), pinned: false, createdAt: index }))
+    expect(history.importItems(incoming)).toEqual({ imported: 1, duplicates: 0, skipped: 2, removed: 0 })
+    expect(history.historyLimit).toBe(1)
+    history.importItems(incoming, { historyLimit: 3, paused: true })
+    expect(history.items).toHaveLength(4)
+    expect(history.paused).toBe(true)
+    expect(history.historyLimit).toBe(3)
+    history.hydrate(Array.from({ length: 4 }, (_, index) => ({ ...original, id: 'existing' + index, data: 'x'.repeat(MAX_ITEM_BYTES), pinned: true })))
+    const result = history.importItems([{ ...original, id: 'incoming', data: 'new favorite', pinned: true, createdAt: Date.now() }])
+    expect(result).toMatchObject({ imported: 0, skipped: 1, removed: 0 })
+    expect(history.items.every(item => item.id.startsWith('existing'))).toBe(true)
+  })
+  it('discards captures already in flight when importing', async () => {
+    let resolve!: (value: { name: string; title: string }) => void
+    const slow = new ClipboardHistory({ read: () => ({ text: 'in flight', image: null }), source: () => new Promise(done => { resolve = done }) })
+    active.push(slow)
+    const { history } = setup(); await history.capture()
+    const pending = slow.capture(); await Promise.resolve()
+    slow.importItems(history.items)
+    resolve({ name: 'fixture', title: '' }); await pending
+    expect(slow.items.map(item => item.data)).toEqual(['hello'])
+  })
+  it('protects favorites from count eviction, recapture, restore and undo', async () => {
+    const { history, setSnapshot } = setup({ text: 'favorite', image: null })
+    await history.capture()
+    const favorite = history.items[0]
+    history.setPinned(favorite.id, true)
+    history.setHistoryLimit(1)
+    for (const text of ['old', 'new']) { setSnapshot({ text, image: null }); await history.capture() }
+    expect(history.items.map(item => item.data)).toEqual(['new', 'favorite'])
+    history.hydrate(history.items, false, 1)
+    expect(history.items.find(item => item.id === favorite.id)?.pinned).toBe(true)
+    setSnapshot({ text: 'favorite', image: null }); await history.capture()
+    expect(history.items[0]).toMatchObject({ id: favorite.id, pinned: true })
+    history.delete(favorite.id); history.undoDelete()
+    expect(history.items.find(item => item.id === favorite.id)?.pinned).toBe(true)
+    history.setPinned(favorite.id, false)
+    expect(history.items).toHaveLength(1)
+  })
+  it('reserves the byte budget for favorites', async () => {
+    const { history, setSnapshot } = setup()
+    await history.capture()
+    const original = history.items[0]
+    history.hydrate(Array.from({ length: 4 }, (_, index) => ({ ...original, id: String(index), pinned: true, data: 'x'.repeat(MAX_ITEM_BYTES) })))
+    setSnapshot({ text: 'ordinary', image: null }); await history.capture()
+    expect(history.items).toHaveLength(4)
+    expect(history.items.every(item => item.pinned)).toBe(true)
+  })
+  it('clears favorites and undo without recapturing the unchanged clipboard or altering settings', async () => {
+    const { history, setSnapshot } = setup()
+    await history.capture()
+    history.setPinned(history.items[0].id, true)
+    setSnapshot({ text: 'removed', image: null }); await history.capture()
+    history.delete(history.items[0].id)
+    history.setHistoryLimit(250); history.setPaused(true)
+    await history.clear()
+    expect(history.items).toEqual([])
+    expect(history.canUndo).toBe(false)
+    expect(history.paused).toBe(true)
+    expect(history.historyLimit).toBe(250)
+    history.undoDelete(); history.setPaused(false); await history.capture()
+    expect(history.items).toEqual([])
+    setSnapshot({ text: 'after clear', image: null }); await history.capture()
+    expect(history.items[0].data).toBe('after clear')
+  })
+  it('cancels an in-flight attribution during clearing', async () => {
+    let resolve!: (value: { name: string; title: string }) => void
+    const slow = new ClipboardHistory({ read: () => ({ text: 'before clear', image: null }), source: () => new Promise(done => { resolve = done }) })
+    active.push(slow)
+    const pending = slow.capture(); await Promise.resolve()
+    await slow.clear()
+    resolve({ name: 'fixture', title: '' }); await pending; await slow.capture()
+    expect(slow.items).toEqual([])
+  })
   it('defaults to 100, applies a new cap immediately and uses it for captures, edits and undo', async () => {
     const { history, setSnapshot } = setup()
     expect(history.historyLimit).toBe(100)
