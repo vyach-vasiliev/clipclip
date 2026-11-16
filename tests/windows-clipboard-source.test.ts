@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createClipboardOwnerReader, type ClipboardOwnerApi } from '../electron/main/windowsClipboardSource'
+import { createClipboardOwnerReader, createWindowsClipboardOwnerListener, WM_CLIPBOARDUPDATE, type ClipboardOwnerApi } from '../electron/main/windowsClipboardSource'
 
 function setup() {
   const api: ClipboardOwnerApi = {
@@ -10,6 +10,51 @@ function setup() {
 }
 
 describe('experimental Windows clipboard image source', () => {
+  function listenerWindow() {
+    const handle = Buffer.alloc(8); handle.writeBigUInt64LE(123n)
+    return { getNativeWindowHandle: () => handle, hookWindowMessage: vi.fn(),
+      unhookWindowMessage: vi.fn(), isDestroyed: vi.fn(() => false) }
+  }
+  it('captures the owner on notification before it closes between polls', () => {
+    const { api, reader } = setup()
+    vi.mocked(api.owner).mockReturnValue(0)
+    const window = listenerWindow()
+    const listenerApi = { add: vi.fn(() => true), remove: vi.fn() }
+    const listener = createWindowsClipboardOwnerListener(window, reader, listenerApi)
+    expect(listenerApi.add).toHaveBeenCalledWith(123n)
+    expect(window.hookWindowMessage).toHaveBeenCalledWith(WM_CLIPBOARDUPDATE, expect.any(Function))
+    const onUpdate = window.hookWindowMessage.mock.calls[0][1]
+    vi.mocked(api.owner).mockReturnValue(123n)
+    onUpdate()
+    vi.mocked(api.owner).mockReturnValue(0)
+    expect(reader.resolve(reader.capture())?.name).toBe('Ножницы')
+    listener.dispose(); listener.dispose()
+    expect(listenerApi.remove).toHaveBeenCalledExactlyOnceWith(123n)
+    expect(window.unhookWindowMessage).toHaveBeenCalledExactlyOnceWith(WM_CLIPBOARDUPDATE)
+    vi.mocked(api.sequence).mockReturnValue(11)
+    vi.mocked(api.owner).mockClear()
+    onUpdate()
+    expect(api.owner).not.toHaveBeenCalled()
+  })
+  it('cleans up a failed notification registration', () => {
+    const window = listenerWindow()
+    const reader = { capture: vi.fn() }
+    expect(() => createWindowsClipboardOwnerListener(window, reader, { add: () => false, remove: vi.fn() })).toThrow('notifications')
+    expect(window.unhookWindowMessage).toHaveBeenCalledWith(WM_CLIPBOARDUPDATE)
+    expect(reader.capture).not.toHaveBeenCalled()
+  })
+  it('isolates reader errors and safely disposes after the window is destroyed', () => {
+    const window = listenerWindow()
+    const reader = { capture: vi.fn(() => { throw new Error('unavailable') }) }
+    const api = { add: () => true, remove: vi.fn() }
+    const listener = createWindowsClipboardOwnerListener(window, reader, api)
+    expect(reader.capture).toHaveBeenCalledOnce()
+    expect(() => window.hookWindowMessage.mock.calls[0][1]()).not.toThrow()
+    window.isDestroyed.mockReturnValue(true)
+    listener.dispose()
+    expect(api.remove).toHaveBeenCalledOnce()
+    expect(window.unhookWindowMessage).not.toHaveBeenCalled()
+  })
   it.each(['SnippingTool', 'ScreenClippingHost', 'ScreenSketch'])('identifies %s from the clipboard owner rather than the active app', executable => {
     const { api, reader } = setup()
     vi.mocked(api.processPath).mockReturnValue('C:\\WindowsApps\\' + executable + '.exe')

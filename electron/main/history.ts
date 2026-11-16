@@ -170,6 +170,9 @@ export class ClipboardHistory {
   private add(type: ClipboardKind, data: string, size: string, source: ClipboardSource, fileUris?: string[], fileKinds?: FileKind[]): ClipboardHistoryItem {
     const existing = this.items.find(item => (item.type === 'image') === (type === 'image')
       && item.data === data && JSON.stringify(item.fileUris) === JSON.stringify(fileUris))
+    // Regression guard: on relaunch the screenshot's owner may already be gone.
+    // Recapturing identical image bytes must not replace a saved source with UNKNOWN_SOURCE.
+    if (type === 'image' && source.name === UNKNOWN_SOURCE.name && existing) source = existing.params.source
     this.items = this.items.filter(item => item !== existing)
     if (fileUris) {
       fileKinds = fileUris.map((_, index) => fileKinds?.[index] === 'unknown'
@@ -240,8 +243,20 @@ export class ClipboardHistory {
     const epoch = this.epoch
     try {
       const snapshot = await this.deps.read()
+      if (this.paused || this.epoch !== epoch) return
       const next = this.fingerprints(snapshot)
-      if (this.previous?.text === next.text && this.previous.image === next.image && this.previous.files === next.files && this.previous.warning === next.warning) return
+      if (this.previous?.text === next.text && this.previous.image === next.image && this.previous.files === next.files && this.previous.warning === next.warning) {
+        // A later read can resolve the owner without changing the image bytes.
+        const { image, imageSource } = snapshot
+        const item = image && imageSource
+          ? this.items.find(item => item.type === 'image' && item.data === image.data) : undefined
+        if (item && imageSource && (item.params.source.name !== imageSource.name || item.params.source.title !== imageSource.title)) {
+          item.params.source = imageSource
+          item.params.tags = item.params.tags.map(tag => tag.code === 'source' ? { ...tag, value: imageSource.name } : tag)
+          this.notify()
+        }
+        return
+      }
       const textChanged = this.previous?.text !== next.text
       const imageChanged = this.previous?.image !== next.image
       const filesChanged = this.previous?.files !== next.files

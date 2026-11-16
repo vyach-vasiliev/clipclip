@@ -8,7 +8,7 @@ import { EncryptedHistoryStorage } from './storage'
 import { assetPath, isTrustedPage, requireId, requireTextRevision } from './security'
 import { createWindowsShortcut } from './windowsShortcut'
 import { DEFAULT_SHORTCUTS, restoreShortcuts, shortcutError, shortcutLabel, type ShortcutSettings } from '../../shared/shortcuts'
-import { getWindowsClipboardOwnerReader } from './windowsClipboardSource'
+import { createWindowsClipboardOwnerListener, getWindowsClipboardOwnerReader } from './windowsClipboardSource'
 import { FileChecker } from './files'
 import { convertColor, isColorFormat } from '../../shared/colors'
 import { BackupError, readBackup, serializeBackup, writeBackup } from './backup'
@@ -31,6 +31,7 @@ let tray: Tray | null = null
 let quitting = false
 let shortcutAvailable = false
 let windowShortcut: ReturnType<typeof createWindowsShortcut> | null = null
+let clipboardOwnerListener: ReturnType<typeof createWindowsClipboardOwnerListener> | null = null
 let shortcuts: ShortcutSettings = { ...DEFAULT_SHORTCUTS }
 let timeFormat: TimeFormat = DEFAULT_TIME_FORMAT
 let shortcutCapture = false
@@ -405,6 +406,14 @@ function createWindow() {
     webPreferences: { preload, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
   })
   const created = win
+  if (process.platform === 'win32' && !testMode) {
+    try {
+      const reader = getWindowsClipboardOwnerReader()
+      if (reader) clipboardOwnerListener = createWindowsClipboardOwnerListener(created, {
+        capture: () => { if (!history.paused) reader.capture() },
+      })
+    } catch { /* Polling can still resolve owners when notifications are unavailable. */ }
+  }
   const syncTaskbar = () => {
     if (process.platform === 'win32' && !created.isDestroyed()) {
       created.setSkipTaskbar((!!tray || testMode) && (!created.isVisible() || created.isMinimized()))
@@ -440,6 +449,8 @@ function createWindow() {
     }
   })
   created.on('closed', () => {
+    clipboardOwnerListener?.dispose()
+    clipboardOwnerListener = null
     shortcutCapture = false
     windowShortcut?.dispose()
     windowShortcut = null
@@ -512,6 +523,8 @@ app.on('before-quit', event => {
   if (quitting) return
   quitting = true
   monitor.stop()
+  clipboardOwnerListener?.dispose()
+  clipboardOwnerListener = null
   history.dispose()
   globalShortcut.unregisterAll()
   windowShortcut?.dispose()

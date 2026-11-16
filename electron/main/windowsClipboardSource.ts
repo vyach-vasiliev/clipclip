@@ -1,6 +1,7 @@
 import path from 'node:path'
 import koffi from 'koffi'
 import type { ClipboardSource } from '../../shared/clipboard'
+import type { BrowserWindow } from 'electron'
 
 export interface ClipboardOwnerApi {
   sequence(): number
@@ -8,6 +9,55 @@ export interface ClipboardOwnerApi {
   processId(window: number | bigint): number
   processPath(processId: number): string | undefined
   title(window: number | bigint): string
+}
+
+export interface ClipboardListenerApi {
+  add(window: number | bigint): boolean
+  remove(window: number | bigint): void
+}
+export const WM_CLIPBOARDUPDATE = 0x031d
+
+// Regression guard: Win+Shift+S can close its clipboard-owner window before the
+// 700 ms poll. Capture owner metadata synchronously on WM_CLIPBOARDUPDATE; moving
+// this lookup back to polling can turn the source into "Неизвестно" again.
+// Keep the sequence checks in createClipboardOwnerReader: cached attribution is
+// valid only for the same clipboard contents. Covered by windows-clipboard-source.test.ts.
+export function createWindowsClipboardOwnerListener(
+  window: Pick<BrowserWindow, 'getNativeWindowHandle' | 'hookWindowMessage' | 'unhookWindowMessage' | 'isDestroyed'>,
+  reader: { capture(): unknown }, api: ClipboardListenerApi = createWindowsClipboardListenerApi(),
+) {
+  const handle = window.getNativeWindowHandle()
+  const hwnd = handle.length === 8 ? handle.readBigUInt64LE() : BigInt(handle.readUInt32LE())
+  let disposed = false
+  const capture = () => {
+    if (disposed) return
+    // Capture metadata only; reading clipboard data inside a window callback can block its owner.
+    try { reader.capture() } catch { /* Attribution must never interrupt the window message loop. */ }
+  }
+  window.hookWindowMessage(WM_CLIPBOARDUPDATE, capture)
+  try {
+    if (!api.add(hwnd)) throw new Error('Clipboard notifications unavailable')
+  } catch (error) {
+    window.unhookWindowMessage(WM_CLIPBOARDUPDATE)
+    throw error
+  }
+  capture()
+  return {
+    dispose() {
+      if (disposed) return
+      disposed = true
+      try { api.remove(hwnd) } finally {
+        if (!window.isDestroyed()) window.unhookWindowMessage(WM_CLIPBOARDUPDATE)
+      }
+    },
+  }
+}
+
+export function createWindowsClipboardListenerApi(): ClipboardListenerApi {
+  const user32 = koffi.load('user32.dll')
+  const add = user32.func('int __stdcall AddClipboardFormatListener(uintptr_t hwnd)')
+  const remove = user32.func('int __stdcall RemoveClipboardFormatListener(uintptr_t hwnd)')
+  return { add: window => !!add(window), remove: window => { remove(window) } }
 }
 
 interface OwnerCapture { sequence: number; source: ClipboardSource }

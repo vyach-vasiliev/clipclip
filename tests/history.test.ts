@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ClipboardHistory, ClipboardMonitor } from '../electron/main/history'
-import { HISTORY_LIMIT, MAX_ITEM_BYTES, type ClipboardSnapshot } from '../shared/clipboard'
+import { HISTORY_LIMIT, MAX_ITEM_BYTES, UNKNOWN_SOURCE, type ClipboardSnapshot } from '../shared/clipboard'
 
 const source = async () => ({ name: 'Fixture: app', title: '' })
 const image = { data: 'data:image/png;base64,aGVsbG8=', width: 2, height: 3 }
@@ -218,6 +218,34 @@ describe('clipboard history', () => {
     const { history } = setup({ text: '', image })
     await history.capture()
     expect(history.items[0].params.source.name).toBe('Fixture: app')
+  })
+  it('preserves a saved image source when its owner is unavailable after relaunch', async () => {
+    const imageSource = { name: 'Ножницы', title: '' }
+    const { history } = setup({ text: '', image, imageSource })
+    await history.capture()
+    const original = history.items[0]
+    const restored = new ClipboardHistory({ read: () => ({ text: '', image }), source: async () => UNKNOWN_SOURCE })
+    active.push(restored)
+    restored.hydrate(history.items)
+    await restored.capture()
+    expect(restored.items).toHaveLength(1)
+    expect(restored.items[0]).toMatchObject({ id: original.id, params: { source: imageSource } })
+    expect(restored.items[0].params.tags).toContainEqual({ code: 'source', value: 'Ножницы' })
+  })
+  it('enriches an unchanged image with a resolved owner without changing its position or timestamp', async () => {
+    const { history, setSnapshot } = setup({ text: '', image })
+    await history.capture()
+    const { id, createdAt } = history.items[0]
+    const imageSource = { name: 'Ножницы', title: '' }
+    const notify = vi.fn(); history.subscribe(notify)
+    setSnapshot({ text: '', image, imageSource })
+    await history.capture()
+    expect(history.items).toHaveLength(1)
+    expect(history.items[0]).toMatchObject({ id, createdAt, params: { source: imageSource } })
+    expect(history.items[0].params.tags).toContainEqual({ code: 'source', value: 'Ножницы' })
+    expect(notify).toHaveBeenCalledOnce()
+    await history.capture()
+    expect(notify).toHaveBeenCalledOnce()
   })
   it('captures links and text from document sources with the right type and keeps versions editable', async () => {
     const { history, setSnapshot } = setup({ text: 'https://example.test', image: null })
