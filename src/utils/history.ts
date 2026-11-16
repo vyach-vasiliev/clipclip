@@ -1,6 +1,7 @@
 import type { ClipboardHistoryItem, ClipboardTag } from '../../shared/clipboard'
 import { tagKey } from '../../shared/clipboard'
 import { matchesTag } from '../../shared/content'
+import { matchesDateTime, type DateTimeFilter } from './dateFilter'
 
 export interface HighlightPart { text: string; matched: boolean }
 
@@ -28,13 +29,14 @@ export function historyTags(items: ClipboardHistoryItem[]): ClipboardTag[] {
   return Array.from(tags.values())
 }
 
-export function filterHistory(items: ClipboardHistoryItem[], query: string, tags: ClipboardTag[]) {
+export function filterHistory(items: ClipboardHistoryItem[], query: string, tags: ClipboardTag[], dateFilter?: DateTimeFilter) {
   query = query.trim().toLocaleLowerCase()
   return items.filter(item => {
     const tagQuery = query.startsWith('#') ? query.slice(1) : query
     const tagged = item.params.tags.some(tag => matchesTag(tag, tagQuery, query.startsWith('#')))
     const matchesQuery = !query || (!query.startsWith('#') && item.type !== 'image' && item.data.toLocaleLowerCase().includes(query)) || tagged
     return matchesQuery && tags.every(selected => item.params.tags.some(tag => tagKey(tag) === tagKey(selected)))
+      && (!dateFilter || matchesDateTime(item.createdAt, dateFilter))
   })
 }
 
@@ -46,7 +48,7 @@ export function adjacentId(ids: string[], selectedId: string | null, direction: 
 }
 
 export function isEditingTarget(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && (!!target.closest('input, textarea, select') || target.isContentEditable)
+  return target instanceof HTMLElement && (!!target.closest('input, textarea, select, .date-filter-dialog') || target.isContentEditable)
 }
 
 export function isActionTarget(target: EventTarget | null): boolean {

@@ -3,6 +3,7 @@ import { open, rename, unlink, writeFile } from 'node:fs/promises'
 import { BACKUP_FORMAT, BACKUP_MANIFEST_VERSION, type BackupManifest, type BackupSettings } from '../../shared/backup'
 import { isHistoryItem, isHistoryLimit, MAX_HISTORY_BYTES, MAX_HISTORY_LIMIT, MAX_ITEM_BYTES, type ClipboardHistoryItem } from '../../shared/clipboard'
 import { DEFAULT_SHORTCUTS, shortcutError, type ShortcutSettings } from '../../shared/shortcuts'
+import { DEFAULT_TIME_FORMAT, isTimeFormat } from '../../shared/time'
 
 export const MAX_BACKUP_BYTES = 256 * 1024 * 1024
 
@@ -36,6 +37,7 @@ export function parseBackup(text: string): BackupManifest {
   if (typeof manifest.appVersion !== 'string' || manifest.appVersion.length > 100
     || typeof manifest.exportedAt !== 'string' || manifest.exportedAt.length > 100 || !Number.isFinite(Date.parse(manifest.exportedAt))
     || !settings || !isHistoryLimit(settings.historyLimit) || typeof settings.paused !== 'boolean' || !shortcuts || shortcutError(shortcuts)
+    || (settings.timeFormat !== undefined && !isTimeFormat(settings.timeFormat))
     || !Array.isArray(manifest.history) || manifest.history.length > MAX_HISTORY_LIMIT * 2) {
     throw new BackupError('Некорректная структура файла экспорта.')
   }
@@ -54,7 +56,7 @@ export function parseBackup(text: string): BackupManifest {
   return { format: BACKUP_FORMAT, manifestVersion: BACKUP_MANIFEST_VERSION,
     appVersion: manifest.appVersion, exportedAt: manifest.exportedAt,
     settings: { historyLimit: settings.historyLimit, paused: settings.paused,
-      shortcuts }, history: items }
+      timeFormat: settings.timeFormat ?? DEFAULT_TIME_FORMAT, shortcuts }, history: items }
 }
 
 export function serializeBackup(items: ClipboardHistoryItem[], settings: BackupSettings, appVersion: string): string {

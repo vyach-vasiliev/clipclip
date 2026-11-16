@@ -8,6 +8,7 @@ import AppIcon from './AppIcon.vue'
 import ShortcutSettings from './ShortcutSettings.vue'
 import { shortcutLabel } from '../../shared/shortcuts'
 import { BACKUP_MANIFEST_VERSION } from '../../shared/backup'
+import { isTimeFormat } from '../../shared/time'
 
 const emit = defineEmits<{ close: [] }>()
 const buffer = useBufferStore()
@@ -17,6 +18,14 @@ const tab = ref<keyof typeof tabs>('general')
 const clearDialog = ref<HTMLDialogElement>()
 const actionNotice = ref('')
 const importSettings = ref(false)
+async function changeTimeFormat(event: Event) {
+  const select = event.target as HTMLSelectElement
+  const value = select.value
+  if (!isTimeFormat(value)) return
+  actionNotice.value = ''
+  if (await buffer.setTimeFormat(value)) actionNotice.value = 'Формат времени применён.'
+  select.value = buffer.timeFormat
+}
 async function transferHistory(mode: 'import' | 'export') {
   await save()
   actionNotice.value = ''
@@ -114,6 +123,15 @@ onBeforeUnmount(() => { disposed = true; cancelTimer(); void save(); clearDialog
     </div>
     <section v-show="tab === 'general'" id="settings-general" role="tabpanel" aria-labelledby="settings-general-tab" class="min-h-0 flex-1 overflow-auto" tabindex="0">
       <div class="flex flex-col gap-3">
+        <div class="border-b border-line pb-3">
+          <label for="time-format" class="block py-1 text-[13px] font-semibold">Формат времени</label>
+          <p id="time-format-help" class="mb-2 text-xs leading-relaxed text-muted">Время записи появляется при наведении, слева от её размера. Даты разделяют записи по дням.</p>
+          <select id="time-format" :value="buffer.timeFormat" class="min-h-10 rounded-lg border border-line bg-canvas px-3 text-[13px] tabular-nums outline-accent"
+            aria-describedby="time-format-help" :disabled="buffer.busy || buffer.loading" @change="changeTimeFormat">
+            <option value="24h">24 часа · 14:30</option>
+            <option value="12h">12 часов · 02:30 PM</option>
+          </select>
+        </div>
         <div>
           <label for="history-limit" class="block py-1 text-[13px] font-semibold">Лимит истории</label>
           <p id="history-limit-help" class="text-xs leading-relaxed text-muted">Количество последних записей. По умолчанию — {{ HISTORY_LIMIT }}.</p>

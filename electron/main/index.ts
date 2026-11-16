@@ -13,6 +13,7 @@ import { FileChecker } from './files'
 import { convertColor, isColorFormat } from '../../shared/colors'
 import { BackupError, readBackup, serializeBackup, writeBackup } from './backup'
 import type { BackupResult } from '../../shared/backup'
+import { DEFAULT_TIME_FORMAT, isTimeFormat, type TimeFormat } from '../../shared/time'
 import { version as appVersion } from '../../package.json'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -31,6 +32,7 @@ let quitting = false
 let shortcutAvailable = false
 let windowShortcut: ReturnType<typeof createWindowsShortcut> | null = null
 let shortcuts: ShortcutSettings = { ...DEFAULT_SHORTCUTS }
+let timeFormat: TimeFormat = DEFAULT_TIME_FORMAT
 let shortcutCapture = false
 let persistent = false
 let storageError: string | null = null
@@ -115,7 +117,7 @@ const history = new ClipboardHistory({ read: readSnapshot, source: getSource,
 const monitor = new ClipboardMonitor(history)
 
 function state(): HistoryState {
-  return { revision, items: history.items, historyLimit: history.historyLimit, shortcuts, paused: history.paused, canUndo: history.canUndo,
+  return { revision, items: history.items, historyLimit: history.historyLimit, timeFormat, shortcuts, paused: history.paused, canUndo: history.canUndo,
     persistent, shortcutAvailable, error: storageError ?? history.error }
 }
 
@@ -135,7 +137,7 @@ function updateTray() {
 }
 
 function saveState() {
-  if (storage) void storage.save({ items: history.items, paused: history.paused, historyLimit: history.historyLimit, shortcuts }).catch(() => {
+  if (storage) void storage.save({ items: history.items, paused: history.paused, historyLimit: history.historyLimit, timeFormat, shortcuts }).catch(() => {
     persistent = false
     storageError = 'Не удалось сохранить историю. Данные этой сессии остаются в памяти.'
     broadcast()
@@ -273,6 +275,13 @@ function registerIpc() {
   })
   handle(CHANNELS.undoDelete, () => history.undoDelete())
   handle(CHANNELS.setHistoryLimit, value => history.setHistoryLimit(value))
+  handle(CHANNELS.setTimeFormat, value => {
+    if (!isTimeFormat(value)) throw new Error('Некорректный формат времени.')
+    if (timeFormat === value) return
+    timeFormat = value
+    broadcast()
+    saveState()
+  })
   handle(CHANNELS.setPinned, value => {
     if (!value || typeof value !== 'object') throw new Error('Некорректное избранное.')
     const request = value as { id?: unknown; pinned?: unknown }
@@ -329,7 +338,7 @@ async function transferHistory(mode: 'import' | 'export', includeSettings = fals
       const selected = await dialog.showSaveDialog(window, { title: 'Экспорт ClipClip', filters,
         defaultPath: path.join(app.getPath('documents'), `clipclip-${new Date().toISOString().slice(0, 10)}.json`) })
       if (selected.canceled || !selected.filePath || window.isDestroyed() || win !== window) return { status: 'cancelled' }
-      const text = serializeBackup(history.items, { historyLimit: history.historyLimit, paused: history.paused, shortcuts }, appVersion)
+      const text = serializeBackup(history.items, { historyLimit: history.historyLimit, paused: history.paused, timeFormat, shortcuts }, appVersion)
       await writeBackup(selected.filePath, text)
       return { status: 'success', message: 'История, избранное и настройки экспортированы в JSON.' }
     }
@@ -352,6 +361,7 @@ async function transferHistory(mode: 'import' | 'export', includeSettings = fals
         throw new BackupError('Сочетание вызова окна занято. Импорт не выполнен. Повторите без применения настроек.')
       }
       shortcuts = { ...next }
+      timeFormat = manifest.settings.timeFormat ?? DEFAULT_TIME_FORMAT
       shortcutAvailable = true
     }
     const result = history.importItems(manifest.history, includeSettings ? manifest.settings : undefined)
@@ -467,6 +477,7 @@ async function initialize() {
       const restored = await storage.load()
       history.hydrate(restored.items, restored.paused, restored.historyLimit)
       shortcuts = restoreShortcuts(restored.shortcuts)
+      timeFormat = isTimeFormat(restored.timeFormat) ? restored.timeFormat : DEFAULT_TIME_FORMAT
       persistent = true
     }
   } catch {

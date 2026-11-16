@@ -39,6 +39,7 @@
 
 @layer components {
   .icon-button { @apply inline-flex size-10 shrink-0 items-center justify-center rounded-lg text-muted hover:bg-accent/8 hover:text-accent disabled:pointer-events-none; }
+  .search-action-button { @apply inline-flex h-full w-10 shrink-0 items-center justify-center text-muted hover:bg-accent/8 hover:text-accent disabled:pointer-events-none; }
   .text-button { @apply inline-flex min-h-10 items-center justify-center gap-1.5 rounded-lg px-2 text-xs font-medium text-accent hover:bg-accent/8 disabled:pointer-events-none; }
   .primary-button { @apply inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-lg bg-accent/12 px-3 text-[13px] font-semibold text-accent hover:bg-accent/20 disabled:pointer-events-none; }
   .zoom-step { @apply inline-flex size-10 shrink-0 items-center justify-center rounded-full text-muted disabled:pointer-events-none dark:text-neutral-100; }
@@ -58,6 +59,10 @@
     outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
     outline-offset: -1px;
   }
+  .history-date { container-type: scroll-state; container-name: history-date; }
+  @container history-date scroll-state(stuck: top) {
+    .history-date-label { @apply bg-canvas; }
+  }
   .image-preview, .preview-content img {
     background: repeating-conic-gradient(#eef0f3 0% 25%, #fff 0% 50%) 0 0 / 16px 16px;
     outline: 1px solid var(--image-outline); outline-offset: -1px;
@@ -66,10 +71,13 @@
     background: repeating-conic-gradient(#eef0f3 0% 25%, #fff 0% 50%) 0 0 / 8px 8px;
     box-shadow: 0 0 0 1px var(--image-outline);
   }
-  .color-dialog::backdrop, .file-actions::backdrop, .clear-history-confirm::backdrop { background: color-mix(in srgb, var(--ink) 28%, transparent); }
+  .color-dialog::backdrop, .file-actions::backdrop, .clear-history-confirm::backdrop, .date-filter-dialog::backdrop, .date-time-picker::backdrop { background: color-mix(in srgb, var(--ink) 28%, transparent); }
 }
 
 /* Chromium-specific controls remain CSS; layout and components use Tailwind. */
+.date-time-input::-webkit-calendar-picker-indicator { display: none; }
+.date-time-input::-webkit-datetime-edit { padding: 0; }
+.date-time-input::-webkit-datetime-edit-fields-wrapper { padding: 0; }
 .window-drag { -webkit-app-region: drag; }
 .window-drag button { -webkit-app-region: no-drag; }
 .image-viewport { overflow-anchor: none; }

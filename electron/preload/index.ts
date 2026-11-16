@@ -20,6 +20,7 @@ const api: ElectronAPI = {
   undoDelete: () => ipcRenderer.invoke(CHANNELS.undoDelete),
   setPaused: paused => ipcRenderer.invoke(CHANNELS.setPaused, paused),
   setHistoryLimit: limit => ipcRenderer.invoke(CHANNELS.setHistoryLimit, limit),
+  setTimeFormat: format => ipcRenderer.invoke(CHANNELS.setTimeFormat, format),
   setPinned: (id, pinned) => ipcRenderer.invoke(CHANNELS.setPinned, { id, pinned }),
   clearHistory: () => ipcRenderer.invoke(CHANNELS.clearHistory),
   exportHistory: () => ipcRenderer.invoke(CHANNELS.exportHistory),

@@ -2,8 +2,9 @@ import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { MAX_HISTORY_BYTES, type ClipboardHistoryItem } from '../../shared/clipboard'
 import type { ShortcutSettings } from '../../shared/shortcuts'
+import type { TimeFormat } from '../../shared/time'
 
-export interface StoredHistory { items: ClipboardHistoryItem[]; paused: boolean; historyLimit?: number; shortcuts?: ShortcutSettings }
+export interface StoredHistory { items: ClipboardHistoryItem[]; paused: boolean; historyLimit?: number; shortcuts?: ShortcutSettings; timeFormat?: TimeFormat }
 export interface HistoryEncryption {
   encrypt(value: string): Promise<Buffer>
   decrypt(value: Buffer): Promise<string>

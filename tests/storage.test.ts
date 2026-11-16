@@ -35,8 +35,8 @@ describe('encrypted persistence', () => {
   })
   it('persists the selected cap with encrypted history', async () => {
     const { storage } = await setup()
-    await storage.save({ items: [], paused: false, historyLimit: 250 })
-    expect(await storage.load()).toEqual({ items: [], paused: false, historyLimit: 250 })
+    await storage.save({ items: [], paused: false, historyLimit: 250, timeFormat: '12h' })
+    expect(await storage.load()).toEqual({ items: [], paused: false, historyLimit: 250, timeFormat: '12h' })
   })
   it('round-trips favorites and custom shortcuts with the encrypted history', async () => {
     const { storage } = await setup()

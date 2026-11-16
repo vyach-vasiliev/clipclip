@@ -4,6 +4,8 @@ import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipbo
 import { KIND_LABELS, TAG_LABELS, type ClipboardKind, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
 import { useBufferStore } from '../store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags, isEditingTarget, isActionTarget } from '../utils/history'
+import { formatTimestamp, historyDateGroups } from '../utils/timestamps'
+import { emptyDateTimeFilter, hasDateTimeFilter } from '../utils/dateFilter'
 import SearchPanel from './SearchPanel.vue'
 import AppIcon from './AppIcon.vue'
 import TagBadge from './TagBadge.vue'
@@ -20,10 +22,11 @@ const SettingsDialog = defineAsyncComponent(() => import('./SettingsDialog.vue')
 const buffer = useBufferStore()
 const settingsOpen = ref(false)
 const favoritesOnly = ref(false)
-const favorites = computed(() => buffer.clipboardHistory.filter(item => item.pinned))
 const ordinaryCount = computed(() => buffer.clipboardHistory.filter(item => !item.pinned).length)
 const search = ref('')
 const selectedTags = ref<ClipboardTag[]>([])
+const dateFilter = ref(emptyDateTimeFilter())
+const searching = computed(() => !!search.value || !!selectedTags.value.length || hasDateTimeFilter(dateFilter.value))
 const selectedId = ref<string | null>(null)
 const searchPanel = ref<InstanceType<typeof SearchPanel>>()
 const announcement = ref('')
@@ -31,6 +34,7 @@ const copyingId = ref<string | null>(null)
 const previewDialog = ref<HTMLDialogElement>()
 const previewId = ref<string | null>(null)
 const preview = computed(() => buffer.clipboardHistory.find(item => item.id === previewId.value))
+const previewTimestamp = computed(() => preview.value ? formatTimestamp(preview.value.createdAt, buffer.timeFormat) : null)
 const editor = useTextEditor(buffer.saveRevision)
 const { draft, editing, saving, saveError, originalText, savedText } = editor
 const textArea = ref<HTMLTextAreaElement>()
@@ -75,10 +79,11 @@ let unsubscribeShown: (() => void) | undefined
 let unsubscribeFullscreen: (() => void) | undefined
 let announcementTimer: ReturnType<typeof setTimeout> | undefined
 const allTags = computed(() => historyTags(buffer.clipboardHistory))
-const filtered = computed(() => filterHistory(buffer.clipboardHistory, search.value, selectedTags.value)
+const filtered = computed(() => filterHistory(buffer.clipboardHistory, search.value, selectedTags.value, dateFilter.value)
   .filter(item => !favoritesOnly.value || item.pinned)
   .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned)))
 const historyList = ref<HTMLElement>()
+const datedHistory = computed(() => historyDateGroups(filtered.value, buffer.timeFormat))
 const { states: fileStates, refresh: refreshFiles, update: updateFileState } = useFileAvailability(filtered, historyList)
 const selected = computed(() => filtered.value.find(item => item.id === selectedId.value))
 const previewItems = computed(() => buffer.clipboardHistory.filter(item => item.type === previewKind.value))
@@ -104,7 +109,12 @@ function announce(message: string) {
   if (announcementTimer) clearTimeout(announcementTimer)
   announcementTimer = setTimeout(() => { announcement.value = '' }, 4000)
 }
-function clearFilters() { search.value = ''; selectedTags.value = []; favoritesOnly.value = false }
+function clearFilters() { search.value = ''; selectedTags.value = []; dateFilter.value = emptyDateTimeFilter(); favoritesOnly.value = false }
+function filterDay(day: string) {
+  dateFilter.value = { ...emptyDateTimeFilter(), dateFrom: day, dateTo: day }
+  historyList.value?.scrollTo({ top: 0 })
+  searchPanel.value?.focus()
+}
 function select(item: ClipboardHistoryItem) { selectedId.value = item.id }
 async function openPreview(item: ClipboardHistoryItem) {
   if (!await editor.flush()) return
@@ -157,6 +167,19 @@ async function searchPreviewTag(tag: ClipboardTag) {
     await nextTick()
     searchPanel.value?.focus()
     document.querySelector('.history-list')?.scrollTo({ top: 0 })
+  } finally { filteringPreview.value = false }
+}
+async function searchPreviewDay() {
+  const day = previewTimestamp.value?.day
+  if (!day || !previewOpen.value || buffer.busy || saving.value || filteringPreview.value || navigatingPreview.value) return
+  filteringPreview.value = true
+  try {
+    if (!await editor.flush() || !await dismissPreview()) return
+    clearFilters()
+    dateFilter.value = { ...emptyDateTimeFilter(), dateFrom: day, dateTo: day }
+    await nextTick()
+    searchPanel.value?.focus()
+    historyList.value?.scrollTo({ top: 0 })
   } finally { filteringPreview.value = false }
 }
 function handlePreviewKeydown(event: KeyboardEvent) {
@@ -266,7 +289,7 @@ function capturePreviewKeys(event: KeyboardEvent) {
   }
 }
 function focusSearchOnActivation() {
-  if (!settingsOpen.value && !previewOpen.value && !colorItem.value && !fileAction.value) searchPanel.value?.focus()
+  if (!settingsOpen.value && !previewOpen.value && !colorItem.value && !fileAction.value && !document.querySelector('.date-filter-dialog[open]')) searchPanel.value?.focus()
 }
 function captureSearchTyping(event: KeyboardEvent) {
   if (settingsOpen.value || previewOpen.value || colorItem.value || fileAction.value || event.defaultPrevented || isEditingTarget(event.target)) return
@@ -306,11 +329,11 @@ function handleKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     event.preventDefault()
     if (event.repeat) return
-    if (search.value || selectedTags.value.length || favoritesOnly.value) { clearFilters(); searchPanel.value?.focus() }
+    if (searching.value || favoritesOnly.value) { clearFilters(); searchPanel.value?.focus() }
     else void buffer.hide()
     return
   }
-  if (otherAction || (editing && !(event.target instanceof HTMLInputElement))) return
+  if (otherAction || (editing && (!(event.target instanceof HTMLInputElement) || event.target.id !== 'history-search'))) return
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault()
     void move(event.key === 'ArrowDown' ? 1 : -1)
@@ -363,27 +386,30 @@ onBeforeUnmount(() => {
     <p v-if="!buffer.loading && !buffer.shortcutAvailable" class="shrink-0 text-xs leading-snug text-accent">
       {{ shortcutLabel(buffer.shortcuts.openWindow) }} недоступна. Откройте окно через значок ClipClip.
     </p>
-    <SearchPanel ref="searchPanel" v-model="search" v-model:selected-tags="selectedTags" :all-tags="allTags" />
+    <SearchPanel ref="searchPanel" v-model="search" v-model:selected-tags="selectedTags" v-model:date-filter="dateFilter" v-model:favorites-only="favoritesOnly" :result-count="filtered.length" :all-tags="allTags" />
 
     <section class="history-section flex min-h-0 flex-1 flex-col" aria-labelledby="history-title" :aria-busy="buffer.loading">
-      <div class="flex shrink-0 items-center justify-between gap-2 pb-2">
-        <div class="flex gap-0.5" aria-label="Раздел истории">
-          <button type="button" class="history-all text-button px-1.5" :aria-pressed="!favoritesOnly" :class="!favoritesOnly ? 'bg-accent/8' : 'text-muted'" @click="favoritesOnly = false">Все</button>
-          <button type="button" class="history-favorites text-button px-1.5" :aria-pressed="favoritesOnly" :class="favoritesOnly ? 'bg-accent/8' : 'text-muted'" @click="favoritesOnly = true"><AppIcon :path="mdiStarOutline" class="size-4" />Избранное <span class="tabular-nums">{{ favorites.length }}</span></button>
-        </div>
-        <h2 id="history-title" class="sr-only">{{ search || selectedTags.length ? 'Результаты поиска' : favoritesOnly ? 'Избранное' : 'Последние записи' }}</h2>
-        <span class="text-xs text-muted tabular-nums">{{ search || selectedTags.length ? filtered.length + ' найдено' : favoritesOnly ? 'Всего: ' + filtered.length : ordinaryCount + ' / ' + buffer.historyLimit }}</span>
+      <div class="flex shrink-0 items-center justify-end gap-2 pb-1">
+        <h2 id="history-title" class="sr-only">{{ searching ? 'Результаты поиска' : favoritesOnly ? 'Избранное' : 'Последние записи' }}</h2>
+        <span class="text-xs text-muted tabular-nums">{{ searching ? filtered.length + ' найдено' : favoritesOnly ? 'Всего: ' + filtered.length : ordinaryCount + ' / ' + buffer.historyLimit }}</span>
       </div>
       <div v-if="buffer.loading" role="status" class="rounded-lg bg-accent/8 px-3 py-4 text-center text-xs text-muted">Загрузка истории…</div>
       <div v-else-if="!filtered.length" class="empty-state my-auto px-3 py-6 text-center text-muted">
         <AppIcon :path="mdiClipboardTextOutline" class="mx-auto size-10" />
-        <h3 class="mt-2.5 mb-1.5 text-base font-semibold text-ink">{{ search || selectedTags.length ? 'Совпадений нет' : favoritesOnly ? 'В избранном пока пусто' : 'История пока пуста' }}</h3>
-        <p class="mb-2.5 text-[13px] text-pretty">{{ search || selectedTags.length ? 'Попробуйте другой запрос или уберите фильтры.' : favoritesOnly ? 'Нажмите звёздочку у записи, чтобы закрепить её и сохранить сверх лимита истории.' : buffer.paused ? 'Продолжите запись и скопируйте текст, изображение или файл.' : 'Скопируйте текст, изображение, файл или папку — запись появится здесь.' }}</p>
-        <button v-if="search || selectedTags.length" type="button" class="text-button" @click="clearFilters">Сбросить поиск и фильтры</button>
+        <h3 class="mt-2.5 mb-1.5 text-base font-semibold text-ink">{{ searching ? 'Совпадений нет' : favoritesOnly ? 'В избранном пока пусто' : 'История пока пуста' }}</h3>
+        <p class="mb-2.5 text-[13px] text-pretty">{{ searching ? 'Попробуйте другой запрос или уберите фильтры.' : favoritesOnly ? 'Нажмите звёздочку у записи, чтобы закрепить её и сохранить сверх лимита истории.' : buffer.paused ? 'Продолжите запись и скопируйте текст, изображение или файл.' : 'Скопируйте текст, изображение, файл или папку — запись появится здесь.' }}</p>
+        <button v-if="searching" type="button" class="text-button" @click="clearFilters">Сбросить поиск и фильтры</button>
       </div>
 
-      <ul v-else ref="historyList" class="history-list -mx-0.5 flex min-h-0 flex-col gap-2 overflow-y-auto p-0.5" @scroll.passive="refreshFiles">
-        <li v-for="item in filtered" :key="item.id" :data-file-id="item.fileUris ? item.id : undefined">
+      <div v-else ref="historyList" class="history-list -mx-0.5 flex min-h-0 scroll-pt-10 flex-col gap-2 overflow-y-auto p-0.5" @scroll.passive="refreshFiles">
+        <div v-for="{ key, pinned, day, dateLabel, records } in datedHistory" :key="key" class="history-date-group shrink-0" role="group" :aria-label="dateLabel" :data-date-group="day">
+          <div v-if="!pinned" class="history-date pointer-events-none sticky top-0 z-10 flex justify-center text-[11px] font-medium text-muted">
+            <button v-if="day" type="button" class="history-date-button pointer-events-auto min-h-10 rounded text-accent tabular-nums"
+              :aria-label="'Показать записи за ' + dateLabel" title="Показать записи за этот день" @click="filterDay(day)"><time :datetime="day" class="history-date-label inline-block rounded px-1.5 py-0.5">{{ dateLabel }}</time></button>
+            <span v-else class="flex min-h-10 items-center"><span class="history-date-label inline-block rounded px-1.5 py-0.5">{{ dateLabel }}</span></span>
+          </div>
+          <ul class="flex flex-col gap-2">
+            <li v-for="{ item, datetime, date, time } in records" :key="item.id" :data-file-id="item.fileUris ? item.id : undefined">
           <article class="clipboard-record group/record relative flex items-center overflow-hidden rounded-lg hover:bg-accent/4 focus-within:bg-accent/10"
             :class="item.id === selectedId ? 'selected bg-selected' : 'bg-surface'">
             <FileLocations v-if="item.fileUris" :item="item" @open="openFileActions(item, $event)" />
@@ -412,7 +438,8 @@ onBeforeUnmount(() => {
                     <AppIcon :path="mdiAlertCircleOutline" class="size-3.5" />
                   </span>
                 </span>
-                <span class="max-w-[40%] shrink-0 truncate">{{ item.params.size }}</span>
+                <time :datetime="datetime" class="record-time invisible shrink-0 tabular-nums whitespace-nowrap group-hover/record:visible">{{ item.pinned ? date + ' · ' + time : time }}</time>
+                <span class="max-w-[40%] shrink-0 truncate tabular-nums">{{ item.params.size }}</span>
               </span>
             </button>
             <div class="record-actions pointer-events-none absolute top-1 right-1 flex items-center gap-0.5 opacity-0 group-hover/record:pointer-events-auto group-hover/record:opacity-100 group-focus-within/record:pointer-events-auto group-focus-within/record:opacity-100" role="group" aria-label="Действия записи">
@@ -423,8 +450,10 @@ onBeforeUnmount(() => {
               <button type="button" class="delete-button icon-button size-8 hover:text-danger" :disabled="buffer.busy" :aria-label="'Удалить запись. ' + recordLabel(item)" title="Удалить" @click="remove(item)"><AppIcon :path="mdiDeleteOutline" class="size-4" /></button>
             </div>
           </article>
-        </li>
-      </ul>
+            </li>
+          </ul>
+        </div>
+      </div>
     </section>
 
     <p class="sr-only" role="status" aria-live="polite">{{ announcement }}</p>
@@ -437,9 +466,15 @@ onBeforeUnmount(() => {
     </footer>
 
     <dialog ref="previewDialog" class="preview-dialog" :class="{ 'is-fullscreen': fullscreen }" aria-labelledby="preview-title" @keydown.stop="handlePreviewKeydown" @cancel.prevent="closePreview">
-      <div class="flex shrink-0 items-center justify-between gap-2 select-none" :class="{ 'window-drag': !fullscreen }">
-        <h2 id="preview-title" class="flex min-w-0 items-baseline gap-1.5 text-[15px] font-semibold"><span class="truncate">{{ KIND_LABELS[previewKind] }}</span><span class="preview-position shrink-0 text-xs text-muted tabular-nums" role="status">({{ previewIndex >= 0 ? previewIndex + 1 : '—' }}/{{ previewItems.length }})</span></h2>
-        <div class="flex">
+      <div class="flex shrink-0 items-start justify-between gap-2 select-none" :class="{ 'window-drag': !fullscreen }">
+        <div class="preview-heading min-w-0 flex-1">
+          <h2 id="preview-title" class="flex min-w-0 items-baseline gap-1.5 text-[15px] font-semibold"><span class="truncate">{{ KIND_LABELS[previewKind] }}</span><span class="preview-position shrink-0 text-xs text-muted tabular-nums" role="status">({{ previewIndex >= 0 ? previewIndex + 1 : '—' }}/{{ previewItems.length }})</span></h2>
+          <p v-if="previewTimestamp" class="preview-timestamp mt-0.5 text-xs leading-snug text-muted tabular-nums" aria-label="Дата и время записи"><time :datetime="previewTimestamp.datetime"><button v-if="previewTimestamp.day" type="button"
+            class="preview-date-link relative inline-block rounded-sm py-1 text-accent after:absolute after:inset-x-0 after:top-1/2 after:h-10 after:-translate-y-1/2"
+            :aria-label="'Показать записи за ' + previewTimestamp.fullDate" title="Показать записи за этот день"
+            :disabled="buffer.busy || saving || filteringPreview || navigatingPreview" @click="searchPreviewDay">{{ previewTimestamp.fullDate }}</button><span v-else>{{ previewTimestamp.fullDate }}</span>{{ ' · ' + previewTimestamp.time }}</time></p>
+        </div>
+        <div class="flex shrink-0">
           <button type="button" class="fullscreen-toggle icon-button" :aria-pressed="fullscreen" :disabled="buffer.busy"
             :aria-label="fullscreen ? 'Выйти из полноэкранного режима' : 'На весь экран'" :title="(fullscreen ? 'Выйти из полноэкранного режима' : 'На весь экран') + ' (Ctrl + F)'" @click="togglePreviewFullscreen"><AppIcon :path="fullscreen ? mdiFullscreenExit : mdiFullscreen" /></button>
           <button v-if="previewIsText" type="button" class="edit-toggle icon-button" :aria-pressed="editing"

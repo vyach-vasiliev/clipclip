@@ -1,5 +1,6 @@
 import type { ClipboardHistoryItem } from './clipboard'
 import type { ShortcutSettings } from './shortcuts'
+import type { TimeFormat } from './time'
 
 // Version the whole document, independently of the application release.
 export const BACKUP_FORMAT = 'clipclip-backup'
@@ -7,6 +8,7 @@ export const BACKUP_MANIFEST_VERSION = 1
 
 export interface BackupSettings {
   historyLimit: number
+  timeFormat?: TimeFormat
   paused: boolean
   shortcuts: ShortcutSettings
 }

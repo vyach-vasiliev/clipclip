@@ -1,6 +1,7 @@
 import type { ColorFormat } from './colors'
 import type { ShortcutSettings } from './shortcuts'
 import type { BackupResult } from './backup'
+import type { TimeFormat } from './time'
 
 export type ClipboardKind = 'text' | 'image' | 'document' | 'link' | 'file' | 'color'
 export type FileKind = 'file' | 'folder' | 'unknown'
@@ -56,6 +57,7 @@ export interface HistoryState {
   revision: number
   items: ClipboardHistoryItem[]
   historyLimit: number
+  timeFormat: TimeFormat
   shortcuts: ShortcutSettings
   paused: boolean
   canUndo: boolean
@@ -77,6 +79,7 @@ export interface ElectronAPI {
   undoDelete(): Promise<void>
   setPaused(paused: boolean): Promise<void>
   setHistoryLimit(limit: number): Promise<void>
+  setTimeFormat(format: TimeFormat): Promise<void>
   setPinned(id: string, pinned: boolean): Promise<void>
   clearHistory(): Promise<void>
   exportHistory(): Promise<BackupResult>
@@ -102,6 +105,7 @@ export const CHANNELS = {
   undoDelete: 'history:undo',
   setPaused: 'history:pause',
   setHistoryLimit: 'history:set-limit',
+  setTimeFormat: 'settings:time-format',
   setPinned: 'history:set-pinned',
   clearHistory: 'history:clear',
   exportHistory: 'history:export',

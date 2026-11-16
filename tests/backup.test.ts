@@ -23,6 +23,15 @@ async function fixturePath() {
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))) })
 
 describe('JSON backup manifest', () => {
+  it('preserves the time format and defaults older v1 backups to 24-hour time', () => {
+    const text = serializeBackup([], { ...settings, timeFormat: '12h' }, '2.0.0')
+    expect(parseBackup(text).settings.timeFormat).toBe('12h')
+    const legacy = JSON.parse(text)
+    delete legacy.settings.timeFormat
+    expect(parseBackup(JSON.stringify(legacy)).settings.timeFormat).toBe('24h')
+    legacy.settings.timeFormat = 'invalid'
+    expect(() => parseBackup(JSON.stringify(legacy))).toThrow('Некорректная структура')
+  })
   it('round-trips plaintext, image data, file references, favorites and settings with one format version', () => {
     const image: ClipboardHistoryItem = { ...item('image', 'data:image/png;base64,' + readFileSync(new URL('../public/notepad.png', import.meta.url)).toString('base64')), type: 'image', params: { ...item().params, type: 'image' } }
     const file: ClipboardHistoryItem = { ...item('files', 'C:\\fixture'), type: 'file', fileUris: ['file:///C:/fixture'], fileKinds: ['folder'], params: { ...item().params, type: 'file' } }

@@ -5,12 +5,14 @@ import { HISTORY_LIMIT } from '../../shared/clipboard'
 import type { ColorFormat } from '../../shared/colors'
 import { DEFAULT_SHORTCUTS, type ShortcutSettings } from '../../shared/shortcuts'
 import type { BackupResult } from '../../shared/backup'
+import { DEFAULT_TIME_FORMAT, type TimeFormat } from '../../shared/time'
 
 export const useBufferStore = defineStore('buffer', () => {
   const clipboardHistory = ref<ClipboardHistoryItem[]>([])
   const loading = ref(true)
   const paused = ref(false)
   const historyLimit = ref(HISTORY_LIMIT)
+  const timeFormat = ref<TimeFormat>(DEFAULT_TIME_FORMAT)
   const shortcuts = ref<ShortcutSettings>({ ...DEFAULT_SHORTCUTS })
   const persistent = ref(false)
   const shortcutAvailable = ref(true)
@@ -28,6 +30,7 @@ export const useBufferStore = defineStore('buffer', () => {
     clipboardHistory.value = state.items
     paused.value = state.paused
     historyLimit.value = state.historyLimit
+    timeFormat.value = state.timeFormat
     shortcuts.value = state.shortcuts
     persistent.value = state.persistent
     shortcutAvailable.value = state.shortcutAvailable
@@ -111,6 +114,9 @@ export const useBufferStore = defineStore('buffer', () => {
   const setHistoryLimit = (value: number) => action(
     () => window.electronAPI!.setHistoryLimit(value), 'Не удалось изменить лимит истории.',
   )
+  const setTimeFormat = (value: TimeFormat) => action(
+    () => window.electronAPI!.setTimeFormat(value), 'Не удалось изменить формат времени.',
+  )
   const setPinned = (id: string, pinned: boolean) => action(
     () => window.electronAPI!.setPinned(id, pinned), 'Не удалось изменить избранное.',
   )
@@ -131,6 +137,6 @@ export const useBufferStore = defineStore('buffer', () => {
     () => window.electronAPI!.setPreviewFullscreen(value), 'Не удалось переключить полноэкранный режим.',
   )
 
-  return { clipboardHistory, loading, paused, historyLimit, shortcuts, persistent, shortcutAvailable, canUndo, error,
-    busy, connect, disconnect, copy, copyColor, revealFile, copyFilePath, remove, undo, setPaused, setHistoryLimit, setPinned, clearHistory, transferHistory, setShortcuts, hide, saveRevision, setFullscreen }
+  return { clipboardHistory, loading, paused, historyLimit, timeFormat, shortcuts, persistent, shortcutAvailable, canUndo, error,
+    busy, connect, disconnect, copy, copyColor, revealFile, copyFilePath, remove, undo, setPaused, setHistoryLimit, setTimeFormat, setPinned, clearHistory, transferHistory, setShortcuts, hide, saveRevision, setFullscreen }
 })

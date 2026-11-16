@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { mdiClose, mdiApplicationOutline, mdiFormatText, mdiRuler, mdiImageOutline, mdiCounter, mdiFileDocumentOutline, mdiLinkVariant, mdiFolderOutline, mdiPaletteOutline } from '@mdi/js'
+import { mdiApplicationOutline, mdiFormatText, mdiRuler, mdiImageOutline, mdiCounter, mdiFileDocumentOutline, mdiLinkVariant, mdiFolderOutline, mdiPaletteOutline } from '@mdi/js'
 import { TAG_LABELS, type ClipboardTag } from '../../shared/clipboard'
 import { tagKind } from '../../shared/content'
-import AppIcon from './AppIcon.vue'
+import FilterBadge from './FilterBadge.vue'
 const props = defineProps<{ tag: ClipboardTag; removable?: boolean }>()
 const colors = {
   color: 'bg-pink-500/10 text-pink-800 dark:bg-pink-400/15 dark:text-pink-200',
@@ -24,10 +24,5 @@ const category = computed((): keyof typeof colors => props.tag.code === 'source'
 </script>
 
 <template>
-  <span class="inline-flex h-7 max-w-56 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium ring-1 ring-inset"
-    :class="[colors[category], removable ? 'ring-current/30 group-hover:ring-current/50' : 'ring-current/10 group-hover:ring-current/25']"
-    :title="TAG_LABELS[tag.code] + ': ' + tag.value">
-    <AppIcon :path="icons[category]" class="size-3.5" /><span class="truncate">{{ tag.value }}</span>
-    <AppIcon v-if="removable" :path="mdiClose" class="size-3.5" />
-  </span>
+  <FilterBadge :icon="icons[category]" :label="tag.value" :removable="removable" :class="colors[category]" :title="TAG_LABELS[tag.code] + ': ' + tag.value" />
 </template>
