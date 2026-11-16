@@ -143,7 +143,7 @@ onBeforeUnmount(() => { disposed = true; cancelTimer(); void save(); clearDialog
             @change="save" @blur="save" @keydown.enter.prevent="save" />
           <span id="history-limit-range" class="text-xs text-muted">от 1 до {{ MAX_HISTORY_LIMIT.toLocaleString('ru-RU') }}</span>
         </div>
-        <p class="text-xs leading-relaxed text-muted">Лимит действует на обычные записи. Избранные закреплены сверху и сохраняются сверх лимита. Общий объём — до 32 МБ, одна запись — до 8 МБ.</p>
+        <p class="text-xs leading-relaxed text-muted">Лимит действует на обычные записи. Избранные доступны через звёздочку в поиске и сохраняются сверх лимита. Общий объём — до 32 МБ, одна запись — до 8 МБ.</p>
         <p v-if="valid && Number(limit) < ordinaryCount" class="rounded-lg bg-accent/8 px-3 py-2 text-xs leading-relaxed text-ink" role="status">
           При применении останутся {{ limit }} самых свежих обычных записей. Более старые записи будут удалены, избранные сохранятся.
         </p>

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { open, rename, unlink, writeFile } from 'node:fs/promises'
 import { BACKUP_FORMAT, BACKUP_MANIFEST_VERSION, type BackupManifest, type BackupSettings } from '../../shared/backup'
 import { isHistoryItem, isHistoryLimit, MAX_HISTORY_BYTES, MAX_HISTORY_LIMIT, MAX_ITEM_BYTES, type ClipboardHistoryItem } from '../../shared/clipboard'
-import { DEFAULT_SHORTCUTS, shortcutError, type ShortcutSettings } from '../../shared/shortcuts'
+import { DEFAULT_SHORTCUTS, shortcutError, upgradeShortcuts, type ShortcutSettings } from '../../shared/shortcuts'
 import { DEFAULT_TIME_FORMAT, isTimeFormat } from '../../shared/time'
 
 export const MAX_BACKUP_BYTES = 256 * 1024 * 1024
@@ -32,8 +32,9 @@ export function parseBackup(text: string): BackupManifest {
   if (manifest.format !== BACKUP_FORMAT) throw new BackupError('Это не файл экспорта ClipClip.')
   if (manifest.manifestVersion !== BACKUP_MANIFEST_VERSION) throw new BackupError('Версия манифеста не поддерживается. Обновите ClipClip или выберите файл с manifestVersion: 1.')
   const settings = manifest.settings
-  const shortcuts = settings?.shortcuts && typeof settings.shortcuts === 'object' && !Array.isArray(settings.shortcuts)
-    ? Object.fromEntries(Object.keys(DEFAULT_SHORTCUTS).map(key => [key, settings.shortcuts[key as keyof ShortcutSettings]])) as ShortcutSettings : null
+  const upgraded = upgradeShortcuts(settings?.shortcuts)
+  const shortcuts = upgraded && typeof upgraded === 'object' && !Array.isArray(upgraded)
+    ? Object.fromEntries(Object.keys(DEFAULT_SHORTCUTS).map(key => [key, (upgraded as ShortcutSettings)[key as keyof ShortcutSettings]])) as ShortcutSettings : null
   if (typeof manifest.appVersion !== 'string' || manifest.appVersion.length > 100
     || typeof manifest.exportedAt !== 'string' || manifest.exportedAt.length > 100 || !Number.isFinite(Date.parse(manifest.exportedAt))
     || !settings || !isHistoryLimit(settings.historyLimit) || typeof settings.paused !== 'boolean' || !shortcuts || shortcutError(shortcuts)

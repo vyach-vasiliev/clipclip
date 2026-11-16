@@ -23,6 +23,13 @@ async function fixturePath() {
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))) })
 
 describe('JSON backup manifest', () => {
+  it('imports legacy shortcuts without discarding existing custom bindings', () => {
+    const value = manifest()
+    delete value.settings.shortcuts.showFavorites
+    delete value.settings.shortcuts.openSettings
+    value.settings.shortcuts.openWindow = 'Ctrl+Shift+Q'
+    expect(parseBackup(JSON.stringify(value)).settings.shortcuts).toEqual({ ...DEFAULT_SHORTCUTS, openWindow: 'Ctrl+Shift+Q' })
+  })
   it('preserves the time format and defaults older v1 backups to 24-hour time', () => {
     const text = serializeBackup([], { ...settings, timeFormat: '12h' }, '2.0.0')
     expect(parseBackup(text).settings.timeFormat).toBe('12h')

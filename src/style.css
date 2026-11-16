@@ -63,7 +63,7 @@
   @container history-date scroll-state(stuck: top) {
     .history-date-label { @apply bg-canvas; }
   }
-  .image-preview, .preview-content img {
+  .image-preview, .preview-content img, .image-hover-preview img {
     background: repeating-conic-gradient(#eef0f3 0% 25%, #fff 0% 50%) 0 0 / 16px 16px;
     outline: 1px solid var(--image-outline); outline-offset: -1px;
   }

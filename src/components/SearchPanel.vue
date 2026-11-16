@@ -9,7 +9,7 @@ import FilterBadge from './FilterBadge.vue'
 import DateTimeFilter from './DateTimeFilter.vue'
 import { dateTimeFilterLabel, emptyDateTimeFilter, hasDateTimeFilter, type DateTimeFilter as DateTimeFilterValue } from '../utils/dateFilter'
 
-const props = defineProps<{ allTags: ClipboardTag[]; modelValue: string; selectedTags: ClipboardTag[]; dateFilter: DateTimeFilterValue; resultCount: number; favoritesOnly: boolean }>()
+const props = defineProps<{ allTags: ClipboardTag[]; modelValue: string; selectedTags: ClipboardTag[]; dateFilter: DateTimeFilterValue; resultCount: number; favoritesOnly: boolean; favoritesShortcut: string }>()
 const emit = defineEmits<{
   'update:modelValue': [value: string]
   'update:selectedTags': [value: ClipboardTag[]]
@@ -64,7 +64,7 @@ defineExpose({ focus, insertText, addSelectedTag })
         <button v-if="query" type="button" class="search-action-button" aria-label="Очистить поиск" title="Очистить поиск" @click="clearSearch"><AppIcon :path="mdiClose" /></button>
         <DateTimeFilter :model-value="dateFilter" :result-count="resultCount" @update:model-value="emit('update:dateFilter', $event)" />
         <button type="button" class="favorites-filter-toggle search-action-button" :class="favoritesOnly ? 'text-accent' : ''" :aria-pressed="favoritesOnly"
-          aria-label="Фильтр избранного" title="Избранное" @click="emit('update:favoritesOnly', !favoritesOnly); focus()"><AppIcon :path="favoritesOnly ? mdiStar : mdiStarOutline" /></button>
+          aria-label="Фильтр избранного" :title="'Избранное (' + favoritesShortcut + ')'" @click="emit('update:favoritesOnly', !favoritesOnly); focus()"><AppIcon :path="favoritesOnly ? mdiStar : mdiStarOutline" /></button>
       </div>
     </div>
     <div v-if="hasFilters" class="filter-row mt-1 flex min-h-10 items-center gap-1 overflow-x-auto" aria-label="Выбранные фильтры">

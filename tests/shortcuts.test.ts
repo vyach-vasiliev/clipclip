@@ -2,6 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_SHORTCUTS, parseShortcut, restoreShortcuts, shortcutError, shortcutFromEvent } from '../shared/shortcuts'
 
 describe('shortcut settings', () => {
+  it('adds navigation shortcuts to legacy settings while preserving custom bindings', () => {
+    const legacy = JSON.parse(JSON.stringify({ ...DEFAULT_SHORTCUTS, openWindow: 'Ctrl+Shift+Q', copySelected: 'F8' }))
+    delete legacy.showFavorites; delete legacy.openSettings
+    expect(restoreShortcuts(legacy)).toEqual({ ...DEFAULT_SHORTCUTS, openWindow: 'Ctrl+Shift+Q', copySelected: 'F8' })
+    expect(shortcutError({ ...DEFAULT_SHORTCUTS, copySelected: 'Ctrl+F' })).toBeTypeOf('string')
+    expect(shortcutError({ ...DEFAULT_SHORTCUTS, togglePause: 'Ctrl+,' })).toBeTypeOf('string')
+  })
   it('restores legacy or corrupt settings without affecting the defaults', () => {
     expect(restoreShortcuts(undefined)).toEqual(DEFAULT_SHORTCUTS)
     expect(restoreShortcuts({ ...DEFAULT_SHORTCUTS, openWindow: 'invalid' })).toEqual(DEFAULT_SHORTCUTS)
@@ -29,5 +36,7 @@ describe('shortcut settings', () => {
     expect(parseShortcut('Ctrl+Shift+F10')).toMatchObject({ virtualKey: 0x79, windowsModifiers: 6 })
     expect(parseShortcut('Ctrl+constructor')).toBeNull()
     expect(parseShortcut('Ctrl+__proto__')).toBeNull()
+    expect(shortcutFromEvent({ ...event, key: 'б', code: 'Comma', altKey: false })).toBe('Ctrl+,')
+    expect(parseShortcut('Ctrl+,')).toMatchObject({ virtualKey: 0xbc, windowsModifiers: 2 })
   })
 })

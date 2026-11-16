@@ -11,6 +11,7 @@ import AppIcon from './AppIcon.vue'
 import TagBadge from './TagBadge.vue'
 import { useTextEditor } from '../composables/textEditor'
 import { useImageZoom } from '../composables/imageZoom'
+import { useImageHoverPreview } from '../composables/imageHoverPreview'
 import { useFileAvailability } from '../composables/fileAvailability'
 import { colorSwatch } from '../../shared/colors'
 import ColorConverter from './ColorConverter.vue'
@@ -23,6 +24,7 @@ const buffer = useBufferStore()
 const settingsOpen = ref(false)
 const favoritesOnly = ref(false)
 const ordinaryCount = computed(() => buffer.clipboardHistory.filter(item => !item.pinned).length)
+const favoritesCount = computed(() => buffer.clipboardHistory.length - ordinaryCount.value)
 const search = ref('')
 const selectedTags = ref<ClipboardTag[]>([])
 const dateFilter = ref(emptyDateTimeFilter())
@@ -78,15 +80,18 @@ const { viewport: imageViewport, natural: imageNatural, scale: imageScale, perce
 let unsubscribeShown: (() => void) | undefined
 let unsubscribeFullscreen: (() => void) | undefined
 let announcementTimer: ReturnType<typeof setTimeout> | undefined
-const allTags = computed(() => historyTags(buffer.clipboardHistory))
-const filtered = computed(() => filterHistory(buffer.clipboardHistory, search.value, selectedTags.value, dateFilter.value)
-  .filter(item => !favoritesOnly.value || item.pinned)
-  .sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned)))
+const sectionHistory = computed(() => buffer.clipboardHistory.filter(item => !!item.pinned === favoritesOnly.value))
+const allTags = computed(() => historyTags(sectionHistory.value))
+const filtered = computed(() => filterHistory(sectionHistory.value, search.value, selectedTags.value, dateFilter.value))
+const { preview: hoverImage, style: hoverImageStyle, schedule: scheduleImageHover, cancel: cancelImageHover } = useImageHoverPreview(filtered,
+  computed(() => !buffer.busy && !buffer.loading && !settingsOpen.value && !previewOpen.value && !colorItem.value && !fileAction.value))
+function historyScrolled() { cancelImageHover(); refreshFiles() }
 const historyList = ref<HTMLElement>()
+watch(favoritesOnly, async () => { await nextTick(); historyList.value?.scrollTo({ top: 0 }) })
 const datedHistory = computed(() => historyDateGroups(filtered.value, buffer.timeFormat))
 const { states: fileStates, refresh: refreshFiles, update: updateFileState } = useFileAvailability(filtered, historyList)
 const selected = computed(() => filtered.value.find(item => item.id === selectedId.value))
-const previewItems = computed(() => buffer.clipboardHistory.filter(item => item.type === previewKind.value))
+const previewItems = computed(() => sectionHistory.value.filter(item => item.type === previewKind.value))
 const previewIndex = computed(() => previewItems.value.findIndex(item => item.id === previewId.value))
 const navigatingPreview = ref(false)
 const filteringPreview = ref(false)
@@ -237,7 +242,7 @@ async function copyById(id: string, hide = false) {
 }
 async function toggleFavorite(item: ClipboardHistoryItem) {
   const pinned = !item.pinned
-  if (await buffer.setPinned(item.id, pinned)) announce(pinned ? 'Добавлено в избранное и закреплено.' : 'Убрано из избранного.')
+  if (await buffer.setPinned(item.id, pinned)) announce(pinned ? 'Добавлено в избранное.' : 'Убрано из избранного.')
 }
 function runShortcut(action: ShortcutAction) {
   if (buffer.busy) return
@@ -246,6 +251,11 @@ function runShortcut(action: ShortcutAction) {
   else if (action === 'previewSelected' && selected.value) void openPreview(selected.value)
   else if (action === 'toggleFavorite' && selected.value) void toggleFavorite(selected.value)
   else if (action === 'togglePause') void buffer.setPaused(!buffer.paused)
+  else if (action === 'showFavorites') {
+    favoritesOnly.value = !favoritesOnly.value
+    searchPanel.value?.focus()
+  }
+  else if (action === 'openSettings') settingsOpen.value = true
 }
 function configuredAction(event: KeyboardEvent) {
   if (event.defaultPrevented || event.isComposing || event.getModifierState('AltGraph')) return null
@@ -377,7 +387,7 @@ onBeforeUnmount(() => {
       <button type="button" class="icon-button" :disabled="buffer.busy || buffer.loading"
         :title="buffer.paused ? 'Продолжить запись' : 'Приостановить запись'" :aria-label="buffer.paused ? 'Продолжить запись' : 'Приостановить запись'"
         @click="buffer.setPaused(!buffer.paused)"><AppIcon :path="buffer.paused ? mdiPlay : mdiPause" /></button>
-      <button type="button" class="settings-button icon-button" aria-label="Настройки" title="Настройки" aria-haspopup="dialog" @click="settingsOpen = true"><AppIcon :path="mdiCogOutline" /></button>
+      <button type="button" class="settings-button icon-button" aria-label="Настройки" :title="'Настройки (' + shortcutLabel(buffer.shortcuts.openSettings) + ')'" aria-haspopup="dialog" @click="settingsOpen = true"><AppIcon :path="mdiCogOutline" /></button>
       <button type="button" class="hide-window icon-button" aria-label="Скрыть окно" title="Скрыть окно (Esc)" @click="buffer.hide"><AppIcon :path="mdiClose" /></button>
     </header>
 
@@ -386,7 +396,7 @@ onBeforeUnmount(() => {
     <p v-if="!buffer.loading && !buffer.shortcutAvailable" class="shrink-0 text-xs leading-snug text-accent">
       {{ shortcutLabel(buffer.shortcuts.openWindow) }} недоступна. Откройте окно через значок ClipClip.
     </p>
-    <SearchPanel ref="searchPanel" v-model="search" v-model:selected-tags="selectedTags" v-model:date-filter="dateFilter" v-model:favorites-only="favoritesOnly" :result-count="filtered.length" :all-tags="allTags" />
+    <SearchPanel ref="searchPanel" v-model="search" v-model:selected-tags="selectedTags" v-model:date-filter="dateFilter" v-model:favorites-only="favoritesOnly" :favorites-shortcut="shortcutLabel(buffer.shortcuts.showFavorites)" :result-count="filtered.length" :all-tags="allTags" />
 
     <section class="history-section flex min-h-0 flex-1 flex-col" aria-labelledby="history-title" :aria-busy="buffer.loading">
       <div class="flex shrink-0 items-center justify-end gap-2 pb-1">
@@ -396,12 +406,12 @@ onBeforeUnmount(() => {
       <div v-if="buffer.loading" role="status" class="rounded-lg bg-accent/8 px-3 py-4 text-center text-xs text-muted">Загрузка истории…</div>
       <div v-else-if="!filtered.length" class="empty-state my-auto px-3 py-6 text-center text-muted">
         <AppIcon :path="mdiClipboardTextOutline" class="mx-auto size-10" />
-        <h3 class="mt-2.5 mb-1.5 text-base font-semibold text-ink">{{ searching ? 'Совпадений нет' : favoritesOnly ? 'В избранном пока пусто' : 'История пока пуста' }}</h3>
-        <p class="mb-2.5 text-[13px] text-pretty">{{ searching ? 'Попробуйте другой запрос или уберите фильтры.' : favoritesOnly ? 'Нажмите звёздочку у записи, чтобы закрепить её и сохранить сверх лимита истории.' : buffer.paused ? 'Продолжите запись и скопируйте текст, изображение или файл.' : 'Скопируйте текст, изображение, файл или папку — запись появится здесь.' }}</p>
+        <h3 class="mt-2.5 mb-1.5 text-base font-semibold text-ink">{{ searching ? 'Совпадений нет' : favoritesOnly ? 'В избранном пока пусто' : favoritesCount ? 'Нет обычных записей' : 'История пока пуста' }}</h3>
+        <p class="mb-2.5 text-[13px] text-pretty">{{ searching ? 'Попробуйте другой запрос или уберите фильтры.' : favoritesOnly ? 'Нажмите звёздочку у записи, чтобы сохранить её в избранном сверх лимита истории.' : favoritesCount ? 'Избранные записи доступны через звёздочку в поиске или ' + shortcutLabel(buffer.shortcuts.showFavorites) + '.' : buffer.paused ? 'Продолжите запись и скопируйте текст, изображение или файл.' : 'Скопируйте текст, изображение, файл или папку — запись появится здесь.' }}</p>
         <button v-if="searching" type="button" class="text-button" @click="clearFilters">Сбросить поиск и фильтры</button>
       </div>
 
-      <div v-else ref="historyList" class="history-list -mx-0.5 flex min-h-0 scroll-pt-10 flex-col gap-2 overflow-y-auto p-0.5" @scroll.passive="refreshFiles">
+      <div v-else ref="historyList" class="history-list -mx-0.5 flex min-h-0 scroll-pt-10 flex-col gap-2 overflow-y-auto p-0.5" @scroll.passive="historyScrolled">
         <div v-for="{ key, pinned, day, dateLabel, records } in datedHistory" :key="key" class="history-date-group shrink-0" role="group" :aria-label="dateLabel" :data-date-group="day">
           <div v-if="!pinned" class="history-date pointer-events-none sticky top-0 z-10 flex justify-center text-[11px] font-medium text-muted">
             <button v-if="day" type="button" class="history-date-button pointer-events-auto min-h-10 rounded text-accent tabular-nums"
@@ -427,7 +437,8 @@ onBeforeUnmount(() => {
                   <mark v-if="part.matched" class="query-mark rounded-xs bg-accent/18 px-px text-inherit">{{ part.text }}</mark><span v-else>{{ part.text }}</span>
                 </template>
               </p>
-              <img v-else :src="item.data" :alt="'Изображение из буфера, ' + item.params.size" class="image-preview block h-12 max-w-[calc(100%_-_100px)] rounded object-contain" loading="lazy" />
+              <img v-else :src="item.data" :alt="'Изображение из буфера, ' + item.params.size" class="image-preview block h-12 max-w-[calc(100%_-_100px)] rounded object-contain" loading="lazy" title=""
+                @mouseenter="scheduleImageHover(item, $event)" @mouseleave="cancelImageHover" />
               <span class="mt-1.5 flex items-center gap-2 text-[11px] leading-snug text-muted">
                 <span class="flex min-w-0 flex-1 items-center gap-1">
                   <span v-if="item.pinned" class="inline-flex shrink-0 text-accent" role="img" aria-label="В избранном" title="В избранном"><AppIcon :path="mdiStar" class="size-3" /></span>
@@ -445,7 +456,7 @@ onBeforeUnmount(() => {
             <div class="record-actions pointer-events-none absolute top-1 right-1 flex items-center gap-0.5 opacity-0 group-hover/record:pointer-events-auto group-hover/record:opacity-100 group-focus-within/record:pointer-events-auto group-focus-within/record:opacity-100" role="group" aria-label="Действия записи">
               <button type="button" class="favorite-button icon-button size-8" :class="item.pinned ? 'text-accent' : ''"
                 :aria-pressed="!!item.pinned" :aria-label="(item.pinned ? 'Убрать из избранного. ' : 'Добавить в избранное. ') + recordLabel(item)"
-                :title="item.pinned ? 'Убрать из избранного' : 'В избранное — закрепить и сохранить сверх лимита'" :disabled="buffer.busy" @focus="select(item)" @click="toggleFavorite(item)"><AppIcon :path="item.pinned ? mdiStar : mdiStarOutline" class="size-4" /></button>
+                :title="item.pinned ? 'Убрать из избранного' : 'В избранное — сохранить сверх лимита'" :disabled="buffer.busy" @focus="select(item)" @click="toggleFavorite(item)"><AppIcon :path="item.pinned ? mdiStar : mdiStarOutline" class="size-4" /></button>
               <button type="button" class="preview-button icon-button size-8" :aria-label="'Просмотреть запись. ' + recordLabel(item)" title="Полный просмотр" @click="openPreview(item)"><AppIcon :path="mdiEyeOutline" class="size-4" /></button>
               <button type="button" class="delete-button icon-button size-8 hover:text-danger" :disabled="buffer.busy" :aria-label="'Удалить запись. ' + recordLabel(item)" title="Удалить" @click="remove(item)"><AppIcon :path="mdiDeleteOutline" class="size-4" /></button>
             </div>
@@ -456,6 +467,9 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
+    <div v-if="hoverImage" class="image-hover-preview pointer-events-none fixed inset-x-3.5 z-30 overflow-hidden rounded-xl border border-line bg-surface p-1 shadow-xl" :style="hoverImageStyle" aria-hidden="true">
+      <img :src="hoverImage.data" alt="" class="block size-full rounded-lg object-contain" draggable="false" />
+    </div>
     <p class="sr-only" role="status" aria-live="polite">{{ announcement }}</p>
     <div v-if="announcement || buffer.canUndo" class="flex shrink-0 items-center justify-between gap-2 text-xs text-muted">
       <p aria-hidden="true">{{ announcement }}</p>
