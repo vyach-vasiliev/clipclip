@@ -20,13 +20,14 @@ const item = (id: string, data = 'fixture [ bracket.\nsecond line'): ClipboardHi
     tags: [{ code: 'source', value: 'Fixture: app' }, { code: 'type', value: 'Текст' }] },
 })
 const state = (items = [item('first')], revision = 1): HistoryState => ({
-  revision, items, historyLimit: 100, timeFormat: '24h', shortcuts: { ...DEFAULT_SHORTCUTS }, paused: false, persistent: true, canUndo: false, shortcutAvailable: true, error: null,
+  revision, items, historyLimit: 100, pasteOnSelect: true, timeFormat: '24h', shortcuts: { ...DEFAULT_SHORTCUTS }, paused: false, persistent: true, canUndo: false, shortcutAvailable: true, error: null,
 })
 async function setup(items?: ClipboardHistoryItem[]) {
   const api: ElectronAPI = {
     getHistory: vi.fn(async () => state(items)),
     onHistoryChanged: vi.fn(callback => { emitState = callback; return vi.fn() }),
     onWindowShown: vi.fn(callback => { emitShown = callback; return vi.fn() }),
+    activateItem: vi.fn(async () => {}),
     copyItem: vi.fn(async () => {}),
     copyColor: vi.fn(async (id, format) => {
       const original = items!.find(record => record.id === id)!
@@ -54,7 +55,9 @@ async function setup(items?: ClipboardHistoryItem[]) {
     setShortcuts: vi.fn(async shortcuts => { emitState({ ...state(items, 2), shortcuts }) }),
     setShortcutCapture: vi.fn(async () => {}),
     setHistoryLimit: vi.fn(async limit => { emitState({ ...state(items, 2), historyLimit: limit }) }),
+    setPasteOnSelect: vi.fn(async pasteOnSelect => { emitState({ ...state(items, 2), pasteOnSelect }) }),
     setTimeFormat: vi.fn(async timeFormat => { emitState({ ...state(items, 2), timeFormat }) }),
+    resetSettings: vi.fn(async () => { emitState(state(items, 3)) }),
     setPaused: vi.fn(async () => {}), hideWindow: vi.fn(async () => {}),
     setPreviewFullscreen: vi.fn(async () => {}), onPreviewFullscreenChanged: vi.fn(() => vi.fn()),
   }
@@ -256,6 +259,41 @@ describe('date and time search', () => {
 })
 
 describe('settings', () => {
+  it('requires confirmation to reset settings and discards a draft limit after reset', async () => {
+    const { wrapper, api } = await setup()
+    emitState({ ...state(undefined, 2), historyLimit: 250, pasteOnSelect: false, timeFormat: '12h', paused: true })
+    await wrapper.get('.settings-button').trigger('click')
+    await vi.dynamicImportSettled()
+    const checkbox = wrapper.get<HTMLInputElement>('#paste-on-select')
+    const limit = wrapper.get<HTMLInputElement>('#history-limit')
+    await wrapper.get('.reset-settings-button').trigger('click')
+    expect(wrapper.get('.reset-settings-confirm').text()).toContain('Запись истории возобновится')
+    await wrapper.get('.cancel-reset').trigger('click')
+    expect(api.resetSettings).not.toHaveBeenCalled()
+    expect(checkbox.element.checked).toBe(false)
+    await limit.setValue('')
+    await wrapper.get('.reset-settings-button').trigger('click')
+    await wrapper.get('.confirm-reset').trigger('click')
+    await flushPromises()
+    expect(api.resetSettings).toHaveBeenCalledOnce()
+    expect(api.clearHistory).not.toHaveBeenCalled()
+    expect(checkbox.element.checked).toBe(true)
+    expect(limit.element.value).toBe('100')
+    expect(wrapper.get('.settings-notice').text()).toContain('Стандартные настройки восстановлены')
+  })
+  it('enables paste by default and saves the checkbox immediately', async () => {
+    const { wrapper, api, buffer } = await setup()
+    await wrapper.get('.settings-button').trigger('click')
+    await vi.dynamicImportSettled()
+    const checkbox = wrapper.get<HTMLInputElement>('#paste-on-select')
+    expect(checkbox.element.checked).toBe(true)
+    await checkbox.setValue(false)
+    await flushPromises()
+    expect(api.setPasteOnSelect).toHaveBeenCalledWith(false)
+    expect(buffer.pasteOnSelect).toBe(false)
+    expect(checkbox.element.checked).toBe(false)
+  })
+
   it('updates record times immediately and restores the selected format when settings reopen', async () => {
     const record = { ...item('timed'), createdAt: new Date(2026, 10, 15, 14, 30).getTime() }
     const { wrapper, api } = await setup([record])
@@ -341,9 +379,9 @@ describe('settings', () => {
     expect(wrapper.get('.settings-notice').text()).toContain('Горячие клавиши применены')
     await wrapper.get('[aria-label="Закрыть настройки"]').trigger('click'); await flushPromises()
     await wrapper.get('input').trigger('keydown', { key: 'Enter', code: 'Enter' })
-    expect(api.copyItem).not.toHaveBeenCalled()
+    expect(api.activateItem).not.toHaveBeenCalled()
     await wrapper.get('input').trigger('keydown', { key: 'F8', code: 'F8' }); await flushPromises()
-    expect(api.copyItem).toHaveBeenCalledWith('first')
+    expect(api.activateItem).toHaveBeenCalledWith('first')
   })
   it('automatically applies the completed input and rejects invalid limits without a save button', async () => {
     const { wrapper, api, buffer } = await setup()
@@ -937,8 +975,8 @@ describe('search and navigation', () => {
     await wrapper.get('input').setValue('')
     await wrapper.get('input').trigger('keydown', { key: 'Enter' })
     await flushPromises()
-    expect(api.copyItem).toHaveBeenCalledWith('first')
-    expect(api.hideWindow).toHaveBeenCalledTimes(1)
+    expect(api.activateItem).toHaveBeenCalledWith('first')
+    expect(api.hideWindow).not.toHaveBeenCalled()
   })
   it('preserves the identity of selection when new records arrive', async () => {
     const { wrapper, api } = await setup([item('first'), item('second')])
@@ -947,7 +985,7 @@ describe('search and navigation', () => {
     await flushPromises()
     expect(wrapper.get('#record-second').attributes('aria-pressed')).toBe('true')
     await wrapper.get('#record-second').trigger('keydown', { key: 'Enter' })
-    expect(api.copyItem).toHaveBeenCalledWith('second')
+    expect(api.activateItem).toHaveBeenCalledWith('second')
   })
   it('renders clipboard markup as text and safely highlights a bracket', async () => {
     const { wrapper } = await setup([item('first', '<img src=x onerror=alert(1)> [')])
@@ -958,7 +996,7 @@ describe('search and navigation', () => {
   })
   it('keeps the window open and reports a copy failure', async () => {
     const { wrapper, api } = await setup()
-    vi.mocked(api.copyItem).mockRejectedValueOnce(new Error('fixture denied'))
+    vi.mocked(api.activateItem).mockRejectedValueOnce(new Error('fixture denied'))
     await wrapper.get('input').trigger('keydown', { key: 'Enter' })
     await flushPromises()
     expect(api.hideWindow).not.toHaveBeenCalled()
@@ -970,7 +1008,7 @@ describe('search and navigation', () => {
     record.fileUris = ['file:///C:/missing.zip']
     const { wrapper, api } = await setup([record])
     const message = 'Файл или папка недоступны: missing.zip'
-    vi.mocked(api.copyItem).mockResolvedValueOnce({ status, message })
+    vi.mocked(api.activateItem).mockResolvedValueOnce({ status, message })
     await wrapper.get('.record-select').trigger('click')
     await flushPromises()
     expect(api.hideWindow).not.toHaveBeenCalled()
@@ -1004,7 +1042,7 @@ describe('search and navigation', () => {
     // A fresh manual check still happens even while the background result is cached.
     await wrapper.get('.record-select').trigger('click')
     await flushPromises()
-    expect(api.copyItem).toHaveBeenCalledWith('files')
+    expect(api.activateItem).toHaveBeenCalledWith('files')
     expect(wrapper.find('.file-unavailable').exists()).toBe(false)
   })
   it('keeps a newer manual failure when an older background check completes late', async () => {
@@ -1016,7 +1054,7 @@ describe('search and navigation', () => {
     vi.mocked(api.checkFiles).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
     intersect([{ target: wrapper.get('[data-file-id]').element, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
     const message = 'Файл больше не существует: removed.zip'
-    vi.mocked(api.copyItem).mockResolvedValueOnce({ status: 'missing', message })
+    vi.mocked(api.activateItem).mockResolvedValueOnce({ status: 'missing', message })
     await wrapper.get('.record-select').trigger('click')
     await flushPromises()
     finish({ status: 'available', message: 'Earlier check' })
@@ -1024,21 +1062,23 @@ describe('search and navigation', () => {
     expect(wrapper.get('.file-unavailable').attributes('title')).toBe(message)
     expect(api.hideWindow).not.toHaveBeenCalled()
   })
-  it('waits for copy completion before hiding', async () => {
-    const { wrapper, api } = await setup()
+  it('waits for activation completion before accepting another action', async () => {
+    const { wrapper, api, buffer } = await setup()
     let finish!: () => void
-    vi.mocked(api.copyItem).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    vi.mocked(api.activateItem).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
     await wrapper.get('input').trigger('keydown', { key: 'Enter' })
     expect(api.hideWindow).not.toHaveBeenCalled()
+    expect(buffer.busy).toBe(true)
     finish(); await flushPromises()
-    expect(api.hideWindow).toHaveBeenCalledTimes(1)
+    expect(buffer.busy).toBe(false)
+    expect(api.hideWindow).not.toHaveBeenCalled()
   })
-  it('copies and hides with a single click on a record', async () => {
+  it('activates with a single click and leaves hiding to the main process', async () => {
     const { wrapper, api } = await setup()
     await wrapper.get('.record-select').trigger('click')
     await flushPromises()
-    expect(api.copyItem).toHaveBeenCalledWith('first')
-    expect(api.hideWindow).toHaveBeenCalledTimes(1)
+    expect(api.activateItem).toHaveBeenCalledWith('first')
+    expect(api.hideWindow).not.toHaveBeenCalled()
   })
   it('shows the full preview without copying', async () => {
     const { wrapper, api } = await setup()
@@ -1119,7 +1159,7 @@ describe('search and navigation', () => {
     expect(wrapper.get('input').element.value).toBe('')
     await wrapper.get('input').trigger('keydown', { key: 'Enter' })
     await flushPromises()
-    expect(api.copyItem).toHaveBeenCalledWith('first')
+    expect(api.activateItem).toHaveBeenCalledWith('first')
   })
   it('ignores an older history snapshot', async () => {
     const { buffer } = await setup()

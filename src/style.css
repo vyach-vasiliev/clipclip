@@ -51,6 +51,7 @@
   .preview-dialog.is-fullscreen { @apply fixed inset-0 m-0 h-dvh w-screen max-h-none max-w-none overflow-hidden rounded-none border-0; }
   .preview-dialog .preview-content { @apply flex-1; }
   .preview-dialog::backdrop { background: var(--canvas); }
+  .settings-confirm { @apply m-auto max-h-[calc(100dvh_-_24px)] w-[calc(100%_-_32px)] max-w-md overflow-auto rounded-xl border border-line bg-surface p-4 text-ink shadow-xl; }
   .license-link { @apply flex min-h-10 cursor-pointer items-center py-2 text-xs leading-relaxed text-accent underline decoration-dashed underline-offset-4 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent; }
   .license-link::marker { content: ''; }
   .license-disclosure[open] > .license-link { @apply font-semibold; }
@@ -71,7 +72,7 @@
     background: repeating-conic-gradient(#eef0f3 0% 25%, #fff 0% 50%) 0 0 / 8px 8px;
     box-shadow: 0 0 0 1px var(--image-outline);
   }
-  .color-dialog::backdrop, .file-actions::backdrop, .clear-history-confirm::backdrop, .date-filter-dialog::backdrop, .date-time-picker::backdrop { background: color-mix(in srgb, var(--ink) 28%, transparent); }
+  .color-dialog::backdrop, .file-actions::backdrop, .settings-confirm::backdrop, .date-filter-dialog::backdrop, .date-time-picker::backdrop { background: color-mix(in srgb, var(--ink) 28%, transparent); }
 }
 
 /* Chromium-specific controls remain CSS; layout and components use Tailwind. */

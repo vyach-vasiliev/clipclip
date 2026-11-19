@@ -16,8 +16,14 @@ const dialog = ref<HTMLDialogElement>()
 const tabs = { general: 'Основные', shortcuts: 'Горячие клавиши', about: 'О программе' }
 const tab = ref<keyof typeof tabs>('general')
 const clearDialog = ref<HTMLDialogElement>()
+const resetDialog = ref<HTMLDialogElement>()
 const actionNotice = ref('')
 const importSettings = ref(false)
+async function changePasteOnSelect(event: Event) {
+  const input = event.target as HTMLInputElement
+  await buffer.setPasteOnSelect(input.checked)
+  input.checked = buffer.pasteOnSelect
+}
 async function changeTimeFormat(event: Event) {
   const select = event.target as HTMLSelectElement
   const value = select.value
@@ -85,6 +91,18 @@ async function save() {
   if (limit.value !== value) scheduleSave()
   else saveStatus.value = applied ? 'saved' : 'error'
 }
+async function resetSettings() {
+  if (buffer.busy || buffer.loading) return
+  cancelTimer()
+  limit.value = buffer.historyLimit
+  if (!await buffer.resetSettings()) return
+  limit.value = buffer.historyLimit
+  await nextTick()
+  actionNotice.value = buffer.historyLimit === HISTORY_LIMIT
+    ? 'Стандартные настройки восстановлены.'
+    : 'Настройки сброшены. Текущий лимит истории сохранён.'
+  resetDialog.value?.close()
+}
 async function close() { await save(); dialog.value?.close(); emit('close') }
 function moveTab(event: KeyboardEvent) {
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
@@ -95,7 +113,14 @@ function moveTab(event: KeyboardEvent) {
   dialog.value?.querySelector<HTMLButtonElement>(`#settings-${tab.value}-tab`)?.focus()
 }
 onMounted(() => dialog.value?.showModal())
-onBeforeUnmount(() => { disposed = true; cancelTimer(); void save(); clearDialog.value?.close(); dialog.value?.close() })
+onBeforeUnmount(() => {
+  disposed = true
+  cancelTimer()
+  void save()
+  clearDialog.value?.close()
+  resetDialog.value?.close()
+  dialog.value?.close()
+})
 </script>
 
 <template>
@@ -123,6 +148,13 @@ onBeforeUnmount(() => { disposed = true; cancelTimer(); void save(); clearDialog
     </div>
     <section v-show="tab === 'general'" id="settings-general" role="tabpanel" aria-labelledby="settings-general-tab" class="min-h-0 flex-1 overflow-auto" tabindex="0">
       <div class="flex flex-col gap-3">
+        <label class="flex items-start gap-2 border-b border-line pb-3 text-[13px] leading-relaxed">
+          <input id="paste-on-select" type="checkbox" class="mt-1 accent-accent" :checked="buffer.pasteOnSelect"
+            :disabled="buffer.busy || buffer.loading" @change="changePasteOnSelect" />
+          <span>Вставлять выбранную запись в активное окно
+            <span class="mt-1 block text-xs text-muted">При выборе записи кликом или Enter ClipClip скроется и вставит её в предыдущее окно.</span>
+          </span>
+        </label>
         <div class="border-b border-line pb-3">
           <label for="time-format" class="block py-1 text-[13px] font-semibold">Формат времени</label>
           <p id="time-format-help" class="mb-2 text-xs leading-relaxed text-muted">Время записи появляется при наведении, слева от её размера. Даты разделяют записи по дням.</p>
@@ -203,7 +235,26 @@ onBeforeUnmount(() => { disposed = true; cancelTimer(); void save(); clearDialog
         <pre class="license-text">{{ component.text }}</pre>
       </details>
     </section>
-    <dialog ref="clearDialog" class="clear-history-confirm m-auto max-h-[calc(100dvh_-_24px)] w-[calc(100%_-_32px)] max-w-md overflow-auto rounded-xl border border-line bg-surface p-4 text-ink shadow-xl"
+    <footer class="flex shrink-0 justify-center border-t border-line">
+      <button type="button" class="reset-settings-button min-h-10 px-2 text-xs text-muted decoration-dashed underline-offset-4 enabled:hover:underline" aria-haspopup="dialog"
+        :disabled="buffer.busy || buffer.loading" @click="resetDialog?.showModal()">Сбросить настройки</button>
+    </footer>
+    <dialog ref="resetDialog" class="reset-settings-confirm settings-confirm"
+      aria-labelledby="reset-settings-title" aria-describedby="reset-settings-description"
+      @cancel.stop.prevent="!buffer.busy && resetDialog?.close()" @keydown.stop>
+      <h3 id="reset-settings-title" class="text-[15px] font-semibold">Сбросить настройки?</h3>
+      <div id="reset-settings-description" class="mt-3 space-y-2 text-xs leading-relaxed text-muted">
+        <p>Вернутся стандартные настройки. История и избранное сохранятся.</p>
+        <p v-if="ordinaryCount > HISTORY_LIMIT">Текущий лимит истории сохранится, чтобы оставить все записи.</p>
+        <p v-if="buffer.paused">Запись истории возобновится.</p>
+      </div>
+      <p v-if="buffer.error" role="alert" class="mt-2 text-xs text-danger">{{ buffer.error }}</p>
+      <div class="mt-4 flex justify-end gap-2">
+        <button type="button" class="cancel-reset text-button" autofocus :disabled="buffer.busy" @click="resetDialog?.close()">Отмена</button>
+        <button type="button" class="confirm-reset primary-button" :disabled="buffer.busy" @click="resetSettings">Сбросить</button>
+      </div>
+    </dialog>
+    <dialog ref="clearDialog" class="clear-history-confirm settings-confirm"
       aria-labelledby="clear-title" aria-describedby="clear-description" @cancel.stop.prevent="clearDialog?.close()" @keydown.stop>
       <h3 id="clear-title" class="text-[15px] font-semibold">Очистить всю историю?</h3>
       <p id="clear-description" class="mt-3 text-xs leading-relaxed text-muted">Будут удалены все записи: {{ buffer.clipboardHistory.length }}, из них избранных: {{ favoriteCount }}. Отменить очистку нельзя. Содержимое системного буфера обмена сохранится.</p>

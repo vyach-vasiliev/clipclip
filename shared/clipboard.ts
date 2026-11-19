@@ -12,6 +12,8 @@ export interface FileCheckResult {
   kinds?: FileKind[]
 }
 
+export type ItemActivationResult = FileCheckResult | { status: 'paste-unavailable'; message: string }
+
 export interface ClipboardTag {
   code: 'size' | 'type' | 'source'
   value: string
@@ -57,6 +59,7 @@ export interface HistoryState {
   revision: number
   items: ClipboardHistoryItem[]
   historyLimit: number
+  pasteOnSelect: boolean
   timeFormat: TimeFormat
   shortcuts: ShortcutSettings
   paused: boolean
@@ -69,6 +72,7 @@ export interface HistoryState {
 export interface ElectronAPI {
   getHistory(): Promise<HistoryState>
   onHistoryChanged(callback: (state: HistoryState) => void): () => void
+  activateItem(id: string): Promise<void | ItemActivationResult>
   copyItem(id: string): Promise<void | FileCheckResult>
   copyColor(id: string, format: ColorFormat): Promise<ClipboardHistoryItem>
   checkFiles(id: string): Promise<FileCheckResult>
@@ -79,7 +83,9 @@ export interface ElectronAPI {
   undoDelete(): Promise<void>
   setPaused(paused: boolean): Promise<void>
   setHistoryLimit(limit: number): Promise<void>
+  setPasteOnSelect(enabled: boolean): Promise<void>
   setTimeFormat(format: TimeFormat): Promise<void>
+  resetSettings(): Promise<void>
   setPinned(id: string, pinned: boolean): Promise<void>
   clearHistory(): Promise<void>
   exportHistory(): Promise<BackupResult>
@@ -95,6 +101,7 @@ export interface ElectronAPI {
 export const CHANNELS = {
   getHistory: 'history:get',
   changed: 'history:changed',
+  activateItem: 'history:activate',
   copyItem: 'history:copy',
   copyColor: 'history:copy-color',
   checkFiles: 'history:check-files',
@@ -105,7 +112,9 @@ export const CHANNELS = {
   undoDelete: 'history:undo',
   setPaused: 'history:pause',
   setHistoryLimit: 'history:set-limit',
+  setPasteOnSelect: 'settings:paste-on-select',
   setTimeFormat: 'settings:time-format',
+  resetSettings: 'settings:reset',
   setPinned: 'history:set-pinned',
   clearHistory: 'history:clear',
   exportHistory: 'history:export',

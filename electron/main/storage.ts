@@ -4,7 +4,7 @@ import { MAX_HISTORY_BYTES, type ClipboardHistoryItem } from '../../shared/clipb
 import type { ShortcutSettings } from '../../shared/shortcuts'
 import type { TimeFormat } from '../../shared/time'
 
-export interface StoredHistory { items: ClipboardHistoryItem[]; paused: boolean; historyLimit?: number; shortcuts?: ShortcutSettings; timeFormat?: TimeFormat }
+export interface StoredHistory { items: ClipboardHistoryItem[]; paused: boolean; historyLimit?: number; shortcuts?: ShortcutSettings; timeFormat?: TimeFormat; pasteOnSelect?: boolean }
 export interface HistoryEncryption {
   encrypt(value: string): Promise<Buffer>
   decrypt(value: Buffer): Promise<string>

@@ -23,6 +23,15 @@ async function fixturePath() {
 afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))) })
 
 describe('JSON backup manifest', () => {
+  it('round-trips paste behavior and defaults legacy backups to enabled', () => {
+    const text = serializeBackup([], { ...settings, pasteOnSelect: false }, '2.0.0')
+    expect(parseBackup(text).settings.pasteOnSelect).toBe(false)
+    const legacy = JSON.parse(text)
+    delete legacy.settings.pasteOnSelect
+    expect(parseBackup(JSON.stringify(legacy)).settings.pasteOnSelect).toBe(true)
+    legacy.settings.pasteOnSelect = 'false'
+    expect(() => parseBackup(JSON.stringify(legacy))).toThrow()
+  })
   it('imports legacy shortcuts without discarding existing custom bindings', () => {
     const value = manifest()
     delete value.settings.shortcuts.showFavorites

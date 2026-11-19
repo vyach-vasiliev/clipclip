@@ -14,6 +14,25 @@ function setup(snapshot: ClipboardSnapshot = { text: 'hello', image: null }) {
 afterEach(() => { active.splice(0).forEach(history => history.dispose()); vi.useRealTimers() })
 
 describe('clipboard history', () => {
+  it('resets history preferences without evicting ordinary or favorite records', async () => {
+    const { history } = setup()
+    await history.capture()
+    const original = history.items[0]
+    const records = Array.from({ length: HISTORY_LIMIT + 2 }, (_, index) => ({
+      ...original, id: 'reset-' + index, data: 'fixture ' + index, pinned: index === 0,
+    }))
+    history.hydrate(records, true, 250)
+    history.resetSettings()
+    expect(history.paused).toBe(false)
+    expect(history.historyLimit).toBe(250)
+    expect(history.items.map(item => item.id)).toEqual(records.map(item => item.id))
+
+    history.delete(records[1].id)
+    history.resetSettings()
+    expect(history.historyLimit).toBe(HISTORY_LIMIT)
+    expect(history.items).toHaveLength(HISTORY_LIMIT + 1)
+    expect(history.items[0].pinned).toBe(true)
+  })
   it('merges imports by content, preserves existing IDs, resolves ID collisions and keeps favorites', async () => {
     const { history, setSnapshot, read } = setup()
     await history.capture()

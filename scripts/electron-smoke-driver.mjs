@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import '../dist-electron/main/index.js'
 import { checkWindowsShortcut } from './windows-shortcut-check.mjs'
+import { checkWindowsPaste } from './windows-paste-check.mjs'
 import { checkWindowsClipboardSource } from './windows-clipboard-source-check.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -65,7 +66,7 @@ async function run() {
     const capabilities = await evaluate('({api: Object.keys(window.electronAPI), genericIPC: typeof window.ipcRenderer, records: document.querySelectorAll(".record-select").length})')
     assert.equal(capabilities.genericIPC, 'undefined')
     assert.equal(capabilities.records, 2)
-    assert.deepEqual(capabilities.api.sort(), ['copyItem', 'copyColor', 'checkFiles', 'revealFile', 'copyFilePath', 'saveTextRevision', 'deleteItem', 'getHistory', 'hideWindow', 'setPreviewFullscreen', 'onPreviewFullscreenChanged', 'onHistoryChanged', 'onWindowShown', 'setPaused', 'setHistoryLimit', 'setTimeFormat', 'setPinned', 'clearHistory', 'exportHistory', 'importHistory', 'setShortcuts', 'setShortcutCapture', 'undoDelete'].sort())
+    assert.deepEqual(capabilities.api.sort(), ['activateItem', 'setPasteOnSelect', 'copyItem', 'copyColor', 'checkFiles', 'revealFile', 'copyFilePath', 'saveTextRevision', 'deleteItem', 'getHistory', 'hideWindow', 'setPreviewFullscreen', 'onPreviewFullscreenChanged', 'onHistoryChanged', 'onWindowShown', 'setPaused', 'setHistoryLimit', 'setTimeFormat', 'resetSettings', 'setPinned', 'clearHistory', 'exportHistory', 'importHistory', 'setShortcuts', 'setShortcutCapture', 'undoDelete'].sort())
     assert.equal(window.webContents.isDevToolsOpened(), false)
     window.show()
     window.focus()
@@ -241,6 +242,15 @@ async function run() {
     assert.equal(await evaluate('document.querySelector(".settings-dialog").open'), true)
     assert.equal(await evaluate('document.querySelector("#history-limit").value'), '100')
     assert.equal(await evaluate('document.querySelector("#time-format").value'), '24h')
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).pasteOnSelect'), true)
+    await evaluate('document.querySelector("#paste-on-select").click()')
+    await delay(50)
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).pasteOnSelect'), false)
+    for (const invalid of ['"false"', 'null', '0']) {
+      assert.equal(await evaluate(`window.electronAPI.setPasteOnSelect(${invalid}).then(()=>false,()=>true)`), true)
+    }
+    await evaluate('window.electronAPI.setPasteOnSelect(true)')
+
     await evaluate('document.querySelector("#time-format").value="12h"; document.querySelector("#time-format").dispatchEvent(new Event("change",{bubbles:true}));')
     await delay(50)
     assert.equal(await evaluate('(await window.electronAPI.getHistory()).timeFormat'), '12h')
@@ -269,7 +279,22 @@ async function run() {
     await screenshot(window, 'settings-shortcuts.png')
     assert.equal(await evaluate('window.electronAPI.setShortcuts({...'+JSON.stringify(initialShortcuts)+',copySelected:"Ctrl+D"}).then(()=>false,()=>true)'), true)
     assert.equal(await evaluate('window.electronAPI.setShortcuts({...'+JSON.stringify(initialShortcuts)+',openWindow:"Q"}).then(()=>false,()=>true)'), true)
-    await evaluate('window.electronAPI.setShortcuts('+JSON.stringify(initialShortcuts)+')')
+    await evaluate('await window.electronAPI.setPasteOnSelect(false); await window.electronAPI.setTimeFormat("12h"); await window.electronAPI.setPaused(true);')
+    const idsBeforeReset = await evaluate('(await window.electronAPI.getHistory()).items.map(item => item.id)')
+    await evaluate('document.querySelector(".reset-settings-button").click()')
+    assert.equal(await evaluate('document.querySelector(".reset-settings-confirm").open'), true)
+    await evaluate('document.querySelector(".cancel-reset").click()')
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).pasteOnSelect'), false)
+    await evaluate('document.querySelector(".reset-settings-button").click(); document.querySelector(".confirm-reset").click();')
+    await delay(100)
+    assert.equal(await evaluate('document.querySelector(".reset-settings-confirm").open'), false)
+    const resetState = await evaluate('window.electronAPI.getHistory()')
+    assert.equal(resetState.historyLimit, 100)
+    assert.equal(resetState.pasteOnSelect, true)
+    assert.equal(resetState.timeFormat, '24h')
+    assert.equal(resetState.paused, false)
+    assert.deepEqual(resetState.shortcuts, initialShortcuts)
+    assert.deepEqual(resetState.items.map(item => item.id), idsBeforeReset)
     await evaluate('document.querySelector("#settings-about-tab").click()')
     await delay(50)
     assert.equal(await evaluate('document.querySelector("#settings-about-tab").getAttribute("aria-selected")'), 'true')
@@ -301,6 +326,7 @@ async function run() {
     }
     if (process.platform === 'win32') {
       await checkWindowsClipboardSource(window, root)
+      await checkWindowsPaste(window)
       const { activeWindow } = await import('get-windows')
       await activeWindow({ accessibilityPermission: false, screenRecordingPermission: false })
       assert.equal(safeStorage.isEncryptionAvailable(), true)

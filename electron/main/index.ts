@@ -2,7 +2,7 @@ import { app, BrowserWindow, clipboard, ClipboardItem, dialog, globalShortcut, i
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { CHANNELS, MAX_ITEM_BYTES, UNKNOWN_SOURCE, isFileUriList, type ClipboardSnapshot, type HistoryState } from '../../shared/clipboard'
+import { CHANNELS, MAX_ITEM_BYTES, UNKNOWN_SOURCE, isFileUriList, type ClipboardSnapshot, type HistoryState, type ItemActivationResult } from '../../shared/clipboard'
 import { ClipboardHistory, ClipboardMonitor } from './history'
 import { EncryptedHistoryStorage } from './storage'
 import { assetPath, isTrustedPage, requireId, requireTextRevision } from './security'
@@ -14,6 +14,7 @@ import { convertColor, isColorFormat } from '../../shared/colors'
 import { BackupError, readBackup, serializeBackup, writeBackup } from './backup'
 import type { BackupResult } from '../../shared/backup'
 import { DEFAULT_TIME_FORMAT, isTimeFormat, type TimeFormat } from '../../shared/time'
+import { createWindowsPaste, PasteError, readWindowHandle } from './windowsPaste'
 import { version as appVersion } from '../../package.json'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -33,6 +34,9 @@ let shortcutAvailable = false
 let windowShortcut: ReturnType<typeof createWindowsShortcut> | null = null
 let clipboardOwnerListener: ReturnType<typeof createWindowsClipboardOwnerListener> | null = null
 let shortcuts: ShortcutSettings = { ...DEFAULT_SHORTCUTS }
+let pasteOnSelect = true
+let windowsPaste: ReturnType<typeof createWindowsPaste> | null = null
+let activating = false
 let timeFormat: TimeFormat = DEFAULT_TIME_FORMAT
 let shortcutCapture = false
 let persistent = false
@@ -118,7 +122,7 @@ const history = new ClipboardHistory({ read: readSnapshot, source: getSource,
 const monitor = new ClipboardMonitor(history)
 
 function state(): HistoryState {
-  return { revision, items: history.items, historyLimit: history.historyLimit, timeFormat, shortcuts, paused: history.paused, canUndo: history.canUndo,
+  return { revision, items: history.items, historyLimit: history.historyLimit, pasteOnSelect, timeFormat, shortcuts, paused: history.paused, canUndo: history.canUndo,
     persistent, shortcutAvailable, error: storageError ?? history.error }
 }
 
@@ -138,11 +142,17 @@ function updateTray() {
 }
 
 function saveState() {
-  if (storage) void storage.save({ items: history.items, paused: history.paused, historyLimit: history.historyLimit, timeFormat, shortcuts }).catch(() => {
+  if (storage) void storage.save({ items: history.items, paused: history.paused, historyLimit: history.historyLimit, pasteOnSelect, timeFormat, shortcuts }).catch(() => {
     persistent = false
     storageError = 'Не удалось сохранить историю. Данные этой сессии остаются в памяти.'
     broadcast()
   })
+}
+
+function publishState() {
+  broadcast()
+  updateTray()
+  saveState()
 }
 
 function registerGlobalShortcut(accelerator: string): boolean {
@@ -223,7 +233,7 @@ function registerIpc() {
       else shell.showItemInFolder(path)
     })
   })
-  handle(CHANNELS.copyItem, async value => {
+  const copyItem = async (value: unknown) => {
     const id = requireId(value)
     const item = history.items.find(candidate => candidate.id === id)
     if (!item) throw new Error('Запись уже удалена.')
@@ -244,6 +254,39 @@ function registerIpc() {
     }
     history.acknowledgeClipboard({ text: item.type !== 'image' && !item.fileUris ? item.data : '', fileUris: item.fileUris,
       image: item.type === 'image' ? { data: item.data, width: 1, height: 1 } : null })
+  }
+  handle(CHANNELS.copyItem, copyItem)
+  handle(CHANNELS.activateItem, async (value): Promise<void | ItemActivationResult> => {
+    if (activating) throw new Error('Дождитесь завершения вставки.')
+    const window = win
+    if (!window || window.isDestroyed() || !window.isFocused()) throw new Error('Окно ClipClip неактивно.')
+    const generation = visibilityGeneration
+    const current = () => generation === visibilityGeneration && !quitting
+      && win === window && !window.isDestroyed() && window.isVisible() && !window.isMinimized()
+    const testTargetPid = testMode ? Number(process.env.CLIPCLIP_TEST_PASTE_TARGET_PID) : 0
+    const shouldPaste = pasteOnSelect && process.platform === 'win32' && (!testMode || testTargetPid > 0)
+    const controller = windowsPaste
+    const target = shouldPaste ? controller?.target() : null
+    activating = true
+    try {
+      const result = await copyItem(value)
+      if (result && result.status !== 'available') return result
+      const copiedOnly = (reason: string): ItemActivationResult => ({
+        status: 'paste-unavailable', message: reason + ' Запись скопирована, её можно вставить вручную через Ctrl+V.',
+      })
+      if (!current() || !window.isFocused()) return copiedOnly('Выбранное окно потеряло фокус.')
+      if (shouldPaste) {
+        if (!controller || !target || (testMode && target.pid !== testTargetPid)) {
+          return copiedOnly('Не найдено прежнее окно для вставки.')
+        }
+        try { await controller.paste(target, readWindowHandle(window.getNativeWindowHandle()), current) }
+        catch (error) {
+          return copiedOnly(error instanceof PasteError ? error.message : 'Не удалось выполнить автоматическую вставку.')
+        }
+      }
+      // Keep the picker open until Windows confirms the focus handoff and accepts Ctrl+V.
+      if (current()) await hideWindow()
+    } finally { activating = false }
   })
   handle(CHANNELS.copyFilePath, async value => {
     if (!value || typeof value !== 'object') throw new Error('Некорректный путь записи.')
@@ -276,12 +319,30 @@ function registerIpc() {
   })
   handle(CHANNELS.undoDelete, () => history.undoDelete())
   handle(CHANNELS.setHistoryLimit, value => history.setHistoryLimit(value))
+  handle(CHANNELS.setPasteOnSelect, value => {
+    if (typeof value !== 'boolean') throw new Error('Некорректная настройка вставки.')
+    pasteOnSelect = value
+    broadcast()
+    saveState()
+  })
   handle(CHANNELS.setTimeFormat, value => {
     if (!isTimeFormat(value)) throw new Error('Некорректный формат времени.')
     if (timeFormat === value) return
     timeFormat = value
     broadcast()
     saveState()
+  })
+  handle(CHANNELS.resetSettings, () => {
+    const defaultBinding = DEFAULT_SHORTCUTS.openWindow
+    if ((shortcutCapture || !shortcutAvailable || shortcuts.openWindow !== defaultBinding) && !registerGlobalShortcut(defaultBinding)) {
+      throw new Error('Стандартное сочетание вызова окна занято другой программой или недоступно.')
+    }
+    shortcutCapture = false
+    shortcutAvailable = true
+    shortcuts = { ...DEFAULT_SHORTCUTS }
+    pasteOnSelect = true
+    timeFormat = DEFAULT_TIME_FORMAT
+    if (!history.resetSettings()) publishState()
   })
   handle(CHANNELS.setPinned, value => {
     if (!value || typeof value !== 'object') throw new Error('Некорректное избранное.')
@@ -304,9 +365,7 @@ function registerIpc() {
     }
     shortcuts = { ...next }
     shortcutAvailable = true
-    broadcast()
-    updateTray()
-    saveState()
+    publishState()
   })
   handle(CHANNELS.setShortcutCapture, value => {
     if (typeof value !== 'boolean') throw new Error('Некорректное состояние настройки клавиш.')
@@ -339,7 +398,7 @@ async function transferHistory(mode: 'import' | 'export', includeSettings = fals
       const selected = await dialog.showSaveDialog(window, { title: 'Экспорт ClipClip', filters,
         defaultPath: path.join(app.getPath('documents'), `clipclip-${new Date().toISOString().slice(0, 10)}.json`) })
       if (selected.canceled || !selected.filePath || window.isDestroyed() || win !== window) return { status: 'cancelled' }
-      const text = serializeBackup(history.items, { historyLimit: history.historyLimit, paused: history.paused, timeFormat, shortcuts }, appVersion)
+      const text = serializeBackup(history.items, { historyLimit: history.historyLimit, paused: history.paused, pasteOnSelect, timeFormat, shortcuts }, appVersion)
       await writeBackup(selected.filePath, text)
       return { status: 'success', message: 'История, избранное и настройки экспортированы в JSON.' }
     }
@@ -362,6 +421,7 @@ async function transferHistory(mode: 'import' | 'export', includeSettings = fals
         throw new BackupError('Сочетание вызова окна занято. Импорт не выполнен. Повторите без применения настроек.')
       }
       shortcuts = { ...next }
+      pasteOnSelect = manifest.settings.pasteOnSelect ?? true
       timeFormat = manifest.settings.timeFormat ?? DEFAULT_TIME_FORMAT
       shortcutAvailable = true
     }
@@ -389,6 +449,7 @@ function toggleTrayWindow() {
   }).catch(() => { if (!quitting) showWindow() })
 }
 function showWindow() {
+  windowsPaste?.capture()
   visibilityGeneration++
   if (!win || win.isDestroyed()) createWindow()
   if (!win) return
@@ -406,6 +467,7 @@ function createWindow() {
     webPreferences: { preload, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
   })
   const created = win
+  windowsPaste?.trackWindow(created)
   if (process.platform === 'win32' && !testMode) {
     try {
       const reader = getWindowsClipboardOwnerReader()
@@ -488,6 +550,7 @@ async function initialize() {
       const restored = await storage.load()
       history.hydrate(restored.items, restored.paused, restored.historyLimit)
       shortcuts = restoreShortcuts(restored.shortcuts)
+      pasteOnSelect = typeof restored.pasteOnSelect === 'boolean' ? restored.pasteOnSelect : true
       timeFormat = isTimeFormat(restored.timeFormat) ? restored.timeFormat : DEFAULT_TIME_FORMAT
       persistent = true
     }
@@ -496,11 +559,10 @@ async function initialize() {
     storage = null
     persistent = false
   }
-  history.subscribe(() => {
-    broadcast()
-    updateTray()
-    saveState()
-  })
+  history.subscribe(publishState)
+  if (process.platform === 'win32' && (!testMode || process.env.CLIPCLIP_TEST_PASTE === '1')) {
+    try { windowsPaste = createWindowsPaste() } catch { /* Clipboard copying remains available. */ }
+  }
   registerIpc()
   if (!testMode || process.env.CLIPCLIP_TEST_TRAY === '1') {
     const trayImage = nativeImage.createFromPath(icon)
@@ -523,6 +585,8 @@ app.on('before-quit', event => {
   if (quitting) return
   quitting = true
   monitor.stop()
+  windowsPaste?.dispose()
+  windowsPaste = null
   clipboardOwnerListener?.dispose()
   clipboardOwnerListener = null
   history.dispose()

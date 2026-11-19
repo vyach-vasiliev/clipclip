@@ -10,6 +10,7 @@ function subscribe<T>(channel: string, callback: (payload: T) => void): () => vo
 const api: ElectronAPI = {
   getHistory: () => ipcRenderer.invoke(CHANNELS.getHistory),
   onHistoryChanged: callback => subscribe<HistoryState>(CHANNELS.changed, callback),
+  activateItem: id => ipcRenderer.invoke(CHANNELS.activateItem, id),
   copyItem: id => ipcRenderer.invoke(CHANNELS.copyItem, id),
   copyColor: (id, format) => ipcRenderer.invoke(CHANNELS.copyColor, { id, format }),
   checkFiles: id => ipcRenderer.invoke(CHANNELS.checkFiles, id),
@@ -20,7 +21,9 @@ const api: ElectronAPI = {
   undoDelete: () => ipcRenderer.invoke(CHANNELS.undoDelete),
   setPaused: paused => ipcRenderer.invoke(CHANNELS.setPaused, paused),
   setHistoryLimit: limit => ipcRenderer.invoke(CHANNELS.setHistoryLimit, limit),
+  setPasteOnSelect: enabled => ipcRenderer.invoke(CHANNELS.setPasteOnSelect, enabled),
   setTimeFormat: format => ipcRenderer.invoke(CHANNELS.setTimeFormat, format),
+  resetSettings: () => ipcRenderer.invoke(CHANNELS.resetSettings),
   setPinned: (id, pinned) => ipcRenderer.invoke(CHANNELS.setPinned, { id, pinned }),
   clearHistory: () => ipcRenderer.invoke(CHANNELS.clearHistory),
   exportHistory: () => ipcRenderer.invoke(CHANNELS.exportHistory),

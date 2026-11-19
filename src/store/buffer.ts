@@ -12,6 +12,7 @@ export const useBufferStore = defineStore('buffer', () => {
   const loading = ref(true)
   const paused = ref(false)
   const historyLimit = ref(HISTORY_LIMIT)
+  const pasteOnSelect = ref(true)
   const timeFormat = ref<TimeFormat>(DEFAULT_TIME_FORMAT)
   const shortcuts = ref<ShortcutSettings>({ ...DEFAULT_SHORTCUTS })
   const persistent = ref(false)
@@ -30,6 +31,7 @@ export const useBufferStore = defineStore('buffer', () => {
     clipboardHistory.value = state.items
     paused.value = state.paused
     historyLimit.value = state.historyLimit
+    pasteOnSelect.value = state.pasteOnSelect
     timeFormat.value = state.timeFormat
     shortcuts.value = state.shortcuts
     persistent.value = state.persistent
@@ -80,14 +82,15 @@ export const useBufferStore = defineStore('buffer', () => {
     finally { busy.value = false }
   }
 
-  const copy = (id: string, onFileCheck?: (id: string, result: FileCheckResult) => void) => action(
+  const copy = (id: string, onFileCheck?: (id: string, result: FileCheckResult) => void, activate = false) => action(
     async () => {
-      const result = await window.electronAPI!.copyItem(id)
+      const result = await (activate ? window.electronAPI!.activateItem(id) : window.electronAPI!.copyItem(id))
+      if (result && result.status === 'paste-unavailable') return result.message
       if (clipboardHistory.value.some(item => item.id === id && item.fileUris)) {
         onFileCheck?.(id, result ?? { status: 'available', message: 'Все файлы и папки доступны.' })
       }
       if (result && result.status !== 'available') return result.message
-    }, 'Не удалось скопировать запись. Попробуйте ещё раз.',
+    }, 'Не удалось скопировать запись.',
   )
   async function copyColor(id: string, format: ColorFormat): Promise<ClipboardHistoryItem | null> {
     let copied: ClipboardHistoryItem | null = null
@@ -114,8 +117,14 @@ export const useBufferStore = defineStore('buffer', () => {
   const setHistoryLimit = (value: number) => action(
     () => window.electronAPI!.setHistoryLimit(value), 'Не удалось изменить лимит истории.',
   )
+  const setPasteOnSelect = (value: boolean) => action(
+    () => window.electronAPI!.setPasteOnSelect(value), 'Не удалось изменить настройку вставки.',
+  )
   const setTimeFormat = (value: TimeFormat) => action(
     () => window.electronAPI!.setTimeFormat(value), 'Не удалось изменить формат времени.',
+  )
+  const resetSettings = () => action(
+    () => window.electronAPI!.resetSettings(), 'Не удалось сбросить настройки. Стандартное сочетание вызова окна может быть занято.',
   )
   const setPinned = (id: string, pinned: boolean) => action(
     () => window.electronAPI!.setPinned(id, pinned), 'Не удалось изменить избранное.',
@@ -137,6 +146,6 @@ export const useBufferStore = defineStore('buffer', () => {
     () => window.electronAPI!.setPreviewFullscreen(value), 'Не удалось переключить полноэкранный режим.',
   )
 
-  return { clipboardHistory, loading, paused, historyLimit, timeFormat, shortcuts, persistent, shortcutAvailable, canUndo, error,
-    busy, connect, disconnect, copy, copyColor, revealFile, copyFilePath, remove, undo, setPaused, setHistoryLimit, setTimeFormat, setPinned, clearHistory, transferHistory, setShortcuts, hide, saveRevision, setFullscreen }
+  return { clipboardHistory, loading, paused, historyLimit, pasteOnSelect, timeFormat, shortcuts, persistent, shortcutAvailable, canUndo, error,
+    busy, connect, disconnect, copy, copyColor, revealFile, copyFilePath, remove, undo, setPaused, setHistoryLimit, setPasteOnSelect, setTimeFormat, resetSettings, setPinned, clearHistory, transferHistory, setShortcuts, hide, saveRevision, setFullscreen }
 })

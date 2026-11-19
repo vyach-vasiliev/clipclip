@@ -151,10 +151,26 @@ export class ClipboardHistory {
 
   setHistoryLimit(limit: unknown) {
     if (!isHistoryLimit(limit)) throw new Error('Некорректный лимит истории.')
-    if (this.historyLimit === limit) return
+    this.updatePreferences(limit, this.paused)
+  }
+
+  resetSettings(): boolean {
+    // Keep the existing limit if reverting it would discard saved entries.
+    const ordinaryCount = this.items.filter(item => !item.pinned).length
+    const limit = ordinaryCount <= HISTORY_LIMIT ? HISTORY_LIMIT : this.historyLimit
+    return this.updatePreferences(limit, false)
+  }
+
+  private updatePreferences(limit: number, paused: boolean): boolean {
+    const limitChanged = this.historyLimit !== limit
+    const pausedChanged = this.paused !== paused
+    if (!limitChanged && !pausedChanged) return false
     this.historyLimit = limit
-    this.trim()
+    this.paused = paused
+    if (limitChanged) this.trim()
+    if (pausedChanged) this.epoch++
     this.notify()
+    return true
   }
 
   private fingerprints(snapshot: ClipboardSnapshot) {
@@ -302,10 +318,7 @@ export class ClipboardHistory {
   }
 
   setPaused(paused: boolean) {
-    if (this.paused === paused) return
-    this.paused = paused
-    this.epoch++
-    this.notify()
+    this.updatePreferences(this.historyLimit, paused)
   }
 
   delete(id: string) {

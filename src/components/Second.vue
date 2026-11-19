@@ -227,17 +227,17 @@ async function prepareQuickPick() {
   document.querySelector('.history-list')?.scrollTo({ top: 0 })
   refreshFiles()
 }
-async function copy(item: ClipboardHistoryItem | undefined, hide = false) {
-  if (item) await copyById(item.id, hide)
+async function copy(item: ClipboardHistoryItem | undefined, hide = false, activate = false) {
+  if (item) await copyById(item.id, hide, activate)
 }
-async function copyById(id: string, hide = false) {
+async function copyById(id: string, hide = false, activate = false) {
   if (buffer.busy) return
   copyingId.value = id
-  const copied = await buffer.copy(id, updateFileState)
+  const copied = await buffer.copy(id, updateFileState, activate)
   copyingId.value = null
   if (copied) {
     announce('Скопировано в буфер обмена.')
-    if (hide && await dismissPreview()) await buffer.hide()
+    if (hide && !activate && await dismissPreview()) await buffer.hide()
   }
 }
 async function toggleFavorite(item: ClipboardHistoryItem) {
@@ -246,7 +246,7 @@ async function toggleFavorite(item: ClipboardHistoryItem) {
 }
 function runShortcut(action: ShortcutAction) {
   if (buffer.busy) return
-  if (action === 'copySelected') void copy(selected.value, true)
+  if (action === 'copySelected') void copy(selected.value, true, true)
   else if (action === 'deleteSelected' && selected.value) void remove(selected.value)
   else if (action === 'previewSelected' && selected.value) void openPreview(selected.value)
   else if (action === 'toggleFavorite' && selected.value) void toggleFavorite(selected.value)
@@ -429,8 +429,8 @@ onBeforeUnmount(() => {
               <span class="color-checker block size-5 overflow-hidden rounded" aria-hidden="true"><span class="block size-full" :style="{ backgroundColor: colors[item.id] ?? undefined }" /></span>
             </button>
             <button :id="'record-' + item.id" type="button" class="record-select block min-h-[78px] min-w-0 flex-1 rounded-md px-3 py-2.5 text-left focus-visible:outline-none disabled:cursor-wait"
-              :aria-pressed="item.id === selectedId" :aria-label="'Скопировать и скрыть. ' + recordLabel(item) + ', ' + item.params.source.name" title="Скопировать и скрыть"
-              :disabled="buffer.busy" :tabindex="item.id === selectedId ? 0 : -1" @focus="select(item)" @click="select(item); copy(item, true)">
+              :aria-pressed="item.id === selectedId" :aria-label="(buffer.pasteOnSelect ? 'Вставить в активное окно. ' : 'Скопировать и скрыть. ') + recordLabel(item) + ', ' + item.params.source.name" :title="buffer.pasteOnSelect ? 'Вставить в активное окно' : 'Скопировать и скрыть'"
+              :disabled="buffer.busy" :tabindex="item.id === selectedId ? 0 : -1" @focus="select(item)" @click="select(item); copy(item, true, true)">
               <p v-if="item.type !== 'image'" class="text-preview line-clamp-2 pr-25 text-[13px] leading-snug whitespace-pre-wrap wrap-anywhere">
                 <span v-if="!item.data.trim()" class="text-muted">Пробелы и переносы строк</span>
                 <template v-else v-for="(part, index) in highlightParts(shortText(item), search)" :key="index">
@@ -476,7 +476,7 @@ onBeforeUnmount(() => {
       <button v-if="buffer.canUndo" type="button" class="text-button" :disabled="buffer.busy" @click="buffer.undo"><AppIcon :path="mdiUndo" class="size-4" />Отменить удаление</button>
     </div>
     <footer class="flex shrink-0 justify-between gap-1.5 border-t border-line pt-2 text-[11px] text-muted" aria-label="Горячие клавиши">
-      <span><kbd>↑</kbd><kbd>↓</kbd> выбор</span><span><kbd>{{ shortcutLabel(buffer.shortcuts.copySelected) }}</kbd> копировать</span><span><kbd>Esc</kbd> скрыть</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> выбор</span><span><kbd>{{ shortcutLabel(buffer.shortcuts.copySelected) }}</kbd> {{ buffer.pasteOnSelect ? 'вставить' : 'копировать' }}</span><span><kbd>Esc</kbd> скрыть</span>
     </footer>
 
     <dialog ref="previewDialog" class="preview-dialog" :class="{ 'is-fullscreen': fullscreen }" aria-labelledby="preview-title" @keydown.stop="handlePreviewKeydown" @cancel.prevent="closePreview">
