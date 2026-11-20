@@ -259,7 +259,7 @@ onBeforeUnmount(() => {
     <section v-show="tab === 'about'" id="settings-about" role="tabpanel" aria-labelledby="settings-about-tab" class="min-h-0 flex-1 overflow-auto" tabindex="0">
       <div class="flex items-center gap-3 py-1">
         <span class="rounded-xl bg-accent/10 p-2.5 text-accent"><AppIcon :path="mdiClipboardTextOutline" :size="30" /></span>
-        <div><h3 class="text-[17px] font-semibold tracking-tight">ClipClip Manager</h3><p class="text-xs text-muted">Версия {{ about.version }}</p></div>
+        <div><h3 class="text-[17px] font-semibold tracking-tight">ClipClip</h3><p class="text-xs text-muted">Версия {{ about.version }}</p></div>
       </div>
       <p class="mt-3 text-[13px] leading-relaxed">История буфера обмена для текста, изображений, файлов, ссылок и цветов. Поиск, просмотр и повторное копирование — в одном окне.</p>
       <dl class="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs leading-relaxed">

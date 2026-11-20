@@ -1,33 +1,18 @@
-## 2022-10-03
+# ClipClip changelog
 
-[v2.1.0](https://github.com/electron-vite/electron-vite-vue/pull/267)
+## Unreleased
 
-- `vite-electron-plugin` is Fast, and WYSIWYG. 🌱
-- last-commit: db2e830 v2.1.0: use `vite-electron-plugin` instead `vite-plugin-electron`
+### Added
 
-## 2022-06-04
+- Searchable clipboard history for text, links, images, and file paths with date and source filters.
+- Keyboard-driven Quick Pick, favorites, and local history storage backed by operating-system encryption.
+- JSON backup import and export for clipboard history and settings.
+- A Windows NSIS installer with an optional launch at sign-in and updates from GitHub Releases.
 
-[v2.0.0](https://github.com/electron-vite/electron-vite-vue/pull/156)
+### Changed
 
-- 🖖 Based on the `vue-ts` template created by `npm create vite`, integrate `vite-plugin-electron`
-- ⚡️ More simplify, is in line with Vite project structure
-- last-commit: a15028a (HEAD -> main) feat: hoist `process.env`
+- Use ClipClip consistently in product names, the README, and GitHub issue templates.
 
-## 2022-01-30
+### Security
 
-[v1.0.0](https://github.com/electron-vite/electron-vite-vue/releases/tag/v1.0.0)
-
-- ⚡️ Main、Renderer、preload, all built with vite
-
-## 2022-01-27
-- Refactor the scripts part.
-- Remove `configs` directory.
-
-## 2021-11-11
-- Refactor the project. Use vite.config.ts build `Main-process`, `Preload-script` and `Renderer-process` alternative rollup.
-- Scenic `Vue>=3.2.13`, `@vue/compiler-sfc` is no longer necessary.
-- If you prefer Rollup, Use rollup branch.
-
-```bash
-Error: @vitejs/plugin-vue requires vue (>=3.2.13) or @vue/compiler-sfc to be present in the dependency tree.
-```
+- Skip items that the source app excludes from Windows clipboard history.

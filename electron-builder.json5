@@ -2,10 +2,10 @@
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
   "appId": "ClipClipManager2025",
+  "copyright": "Copyright © 2026 ClipClip",
   "asar": true,
   // get-windows ships N-API binaries, independent of Electron's Node ABI.
   "npmRebuild": false,
-  "productName": "ClipClip Manager",
   // The Windows release workflow supplies its own GitHub repository.
   "publish": null,
   "directories": {
@@ -13,7 +13,8 @@
   },
   "files": [
     "dist",
-    "dist-electron"
+    "dist-electron",
+    "LICENSE"
   ],
   "mac": {
     "target": [

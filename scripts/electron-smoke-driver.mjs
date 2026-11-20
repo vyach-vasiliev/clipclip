@@ -375,7 +375,7 @@ async function run() {
     assert.equal(await evaluate('getComputedStyle(document.querySelector(".license-link")).textDecorationStyle'), 'dashed')
     await evaluate('document.querySelector(".license-disclosure").scrollIntoView({block:"start"})')
     await delay(50)
-    assert.ok(await evaluate('document.querySelector(".license-disclosure .license-text").textContent.includes("Copyright (c) 2026 Vasilev Viacheslav")'))
+    assert.ok(await evaluate('document.querySelector(".license-disclosure .license-text").textContent.includes("Copyright (c) 2026 ClipClip")'))
     await screenshot(window, 'settings-license.png')
     assert.ok(await evaluate('Array.from(document.querySelectorAll("#settings-about .license-link")).some(summary => summary.textContent.startsWith("electron-updater "))'))
     assert.equal(await evaluate('Boolean(document.querySelector(".electron-notices"))'), false)

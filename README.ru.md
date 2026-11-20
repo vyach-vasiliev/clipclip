@@ -1,5 +1,5 @@
 <p align="center"><img src="assets/readme/clipclip.png" width="56" height="56" alt="Значок ClipClip"></p>
-<h1 align="center">ClipClip Manager</h1>
+<h1 align="center">ClipClip</h1>
 <p align="center"><a href="README.md" lang="en">English</a> · <strong>Русский</strong></p>
 <p align="center">История буфера обмена с поиском, избранным и вставкой по горячей клавише.<br>Тексты, ссылки, изображения и пути к файлам сохраняются локально.</p>
 <p align="center">
@@ -111,7 +111,7 @@ Dev-сервер работает на `http://127.0.0.1:3344`. Для DevTools 
 
 ## Выпуск версий Windows
 
-Включите **GitHub Actions** в публичном репозитории ClipClip. Если `git remote -v` показывает `electron-vite/electron-vite-vue`, этот адрес ведёт на исходный шаблон. Отправляйте теги в собственный репозиторий ClipClip. В примере он настроен как remote `clipclip`.
+Включите **GitHub Actions** в публичном репозитории ClipClip. В примере удалённый репозиторий `origin` указывает на репозиторий ClipClip.
 
 Выберите свободную версию выше предыдущего опубликованного релиза. Команда обновит `package.json` и `package-lock.json`.
 
@@ -123,7 +123,7 @@ npm version 2.0.1 --no-git-tag-version
 
 ```sh
 git tag v2.0.1
-git push clipclip v2.0.1
+git push origin v2.0.1
 ```
 
 [Workflow **Release Windows installer**](.github/workflows/release-windows.yml) собирает NSIS x64 и публикует `ClipClip-Windows-<версия>-Setup.exe`, его `.exe.blockmap` и `latest.yml`. Адрес GitHub Releases для автообновлений определяется по репозиторию, где запущен workflow.
@@ -141,4 +141,4 @@ git push clipclip v2.0.1
 
 ## Лицензия
 
-ClipClip распространяется по [лицензии MIT](LICENSE). Тексты лицензий компонентов доступны в приложении на вкладке **«О программе»**. Правила работы с репозиторием описаны в [AGENTS.md](AGENTS.md).
+Автор ClipClip — Vasilev Viacheslav. Приложение распространяется по [лицензии MIT](LICENSE). © 2026 ClipClip. Тексты лицензий компонентов доступны в приложении на вкладке **«О программе»**. Правила работы с репозиторием описаны в [AGENTS.md](AGENTS.md).

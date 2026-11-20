@@ -626,7 +626,7 @@ describe('settings', () => {
     expect(about.text()).toContain(appVersion)
     expect(about.text()).toContain('Vasilev Viacheslav')
     expect(wrapper.get('#settings-about-tab').text()).toBe('О программе')
-    expect(about.get('.license-text').text()).toContain('Copyright (c) 2026 Vasilev Viacheslav')
+    expect(about.get('.license-text').text()).toContain('Copyright (c) 2026 ClipClip')
     expect(about.get('.license-text').text()).not.toContain('草鞋没号')
     const updaterLicense = about.findAll('.license-disclosure').find(disclosure =>
       disclosure.get('summary').text().startsWith('electron-updater '))

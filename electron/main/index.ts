@@ -11,6 +11,7 @@ import { DEFAULT_SHORTCUTS, restoreShortcuts, shortcutError, shortcutLabel, type
 import { createWindowsClipboardOwnerListener, getWindowsClipboardOwnerReader } from './windowsClipboardSource'
 import { FileChecker } from './files'
 import { convertColor, isColorFormat } from '../../shared/colors'
+import { existingHistoryProfile, HISTORY_FILENAME, LEGACY_PROFILE_NAME } from './historyProfile'
 import { BackupError, readBackup, serializeBackup, writeBackup } from './backup'
 import type { BackupResult } from '../../shared/backup'
 import { DEFAULT_TIME_FORMAT, isTimeFormat, type TimeFormat } from '../../shared/time'
@@ -26,7 +27,22 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const rendererRoot = path.join(root, 'dist')
 const preload = path.join(root, 'dist-electron/preload/index.cjs')
 const testMode = !app.isPackaged && process.env.CLIPCLIP_TEST_MODE === '1'
-if (testMode && process.env.CLIPCLIP_TEST_USER_DATA) app.setPath('userData', process.env.CLIPCLIP_TEST_USER_DATA)
+if (testMode) {
+  if (process.env.CLIPCLIP_TEST_USER_DATA) app.setPath('userData', process.env.CLIPCLIP_TEST_USER_DATA)
+} else {
+  const currentProfile = app.getPath('userData')
+  const profile = app.commandLine.getSwitchValue('user-data-dir')
+    ? currentProfile
+    : existingHistoryProfile(app.getPath('appData'), currentProfile)
+  const useLegacyKeyName = process.platform === 'darwin' || process.platform === 'linux'
+  if (profile !== currentProfile || useLegacyKeyName) app.setPath('userData', profile)
+  if (useLegacyKeyName) {
+    // Electron derives the OS keyring namespace during native startup.
+    const productName = app.name
+    app.name = LEGACY_PROFILE_NAME
+    app.prependOnceListener('will-finish-launching', () => { app.name = productName })
+  }
+}
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }])
 if (!app.requestSingleInstanceLock()) { app.quit(); process.exit(0) }
@@ -798,7 +814,7 @@ function createWindow(showOnReady = true) {
   if (win && !win.isDestroyed()) return
   showWindowOnReady = showOnReady
   win = new BrowserWindow({
-    title: 'ClipClip Manager', width: 460, height: 560, minWidth: 380, minHeight: 420,
+    title: 'ClipClip', width: 460, height: 560, minWidth: 380, minHeight: 420,
     show: false, icon, autoHideMenuBar: true, frame: process.platform !== 'win32', skipTaskbar: process.platform === 'win32',
     webPreferences: { preload, nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true },
   })
@@ -902,7 +918,7 @@ async function initialize() {
     if (!testMode && safeStorage.isEncryptionAvailable()
       && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text')) {
       const useAsyncEncryption = await safeStorage.isAsyncEncryptionAvailable()
-      storage = new EncryptedHistoryStorage(path.join(app.getPath('userData'), 'history.enc'), {
+      storage = new EncryptedHistoryStorage(path.join(app.getPath('userData'), HISTORY_FILENAME), {
         encrypt: async value => useAsyncEncryption ? safeStorage.encryptStringAsync(value) : safeStorage.encryptString(value),
         decrypt: async value => useAsyncEncryption ? (await safeStorage.decryptStringAsync(value)).result : safeStorage.decryptString(value),
       })

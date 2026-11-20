@@ -1,4 +1,5 @@
-!define CLIPCLIP_STARTUP_SHORTCUT "ClipClip Manager.lnk"
+!define CLIPCLIP_STARTUP_SHORTCUT "ClipClip.lnk"
+!define CLIPCLIP_LEGACY_STARTUP_SHORTCUT "ClipClip Manager.lnk"
 
 !macro customPageAfterChangeDir
   Var ClipClipStartupCheckbox
@@ -54,8 +55,12 @@
     StrCpy $0 "$perMachineInstallationFolder"
   ${EndIf}
 
-  ${If} $ClipClipStartupSelected == ${BST_CHECKED}
-  ${OrIf} ${FileExists} "$SMSTARTUP\${CLIPCLIP_STARTUP_SHORTCUT}"
+  ${If} ${FileExists} "$SMSTARTUP\${CLIPCLIP_LEGACY_STARTUP_SHORTCUT}"
+    ; Windows keys its startup approval by shortcut name.
+    CreateShortCut "$SMSTARTUP\${CLIPCLIP_LEGACY_STARTUP_SHORTCUT}" "$appExe" "--hidden"
+  ${ElseIf} $ClipClipStartupSelected == ${BST_CHECKED}
+    CreateShortCut "$SMSTARTUP\${CLIPCLIP_STARTUP_SHORTCUT}" "$appExe" "--hidden"
+  ${ElseIf} ${FileExists} "$SMSTARTUP\${CLIPCLIP_STARTUP_SHORTCUT}"
   ${AndIf} $0 != "$INSTDIR"
     CreateShortCut "$SMSTARTUP\${CLIPCLIP_STARTUP_SHORTCUT}" "$appExe" "--hidden"
   ${EndIf}
@@ -67,6 +72,7 @@
     ${If} $0 == ""
       SetShellVarContext current
       Delete "$SMSTARTUP\${CLIPCLIP_STARTUP_SHORTCUT}"
+      Delete "$SMSTARTUP\${CLIPCLIP_LEGACY_STARTUP_SHORTCUT}"
       SetShellVarContext all
     ${EndIf}
   ${EndIf}
@@ -75,5 +81,6 @@
 !macro customUnInstall
   ${IfNot} ${isUpdated}
     Delete "$SMSTARTUP\${CLIPCLIP_STARTUP_SHORTCUT}"
+    Delete "$SMSTARTUP\${CLIPCLIP_LEGACY_STARTUP_SHORTCUT}"
   ${EndIf}
 !macroend

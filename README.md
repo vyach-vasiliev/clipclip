@@ -1,5 +1,5 @@
 <p align="center"><img src="assets/readme/clipclip.png" width="56" height="56" alt="ClipClip icon"></p>
-<h1 align="center">ClipClip Manager</h1>
+<h1 align="center">ClipClip</h1>
 <p align="center"><strong>English</strong> · <a href="README.ru.md" lang="ru">Русский</a></p>
 <p align="center">Clipboard history with search, favorites, and keyboard shortcuts.<br>Keep text, links, images, and file paths on your device and paste them again when you need them.</p>
 <p align="center">
@@ -111,7 +111,7 @@ The dev server runs at `http://127.0.0.1:3344`. Set `CLIPCLIP_DEVTOOLS=1` to ope
 
 ## Windows releases
 
-Enable **GitHub Actions** in the public ClipClip repository. If `git remote -v` shows `electron-vite/electron-vite-vue`, that remote points to the upstream template. Push release tags to your ClipClip repository. This example uses a remote named `clipclip`.
+Enable **GitHub Actions** in the public ClipClip repository. This example assumes `origin` points to the ClipClip repository.
 
 Choose an unused version higher than the last published release. The command updates both `package.json` and `package-lock.json`.
 
@@ -123,7 +123,7 @@ Commit the changes, create a matching tag, and push it to GitHub.
 
 ```sh
 git tag v2.0.1
-git push clipclip v2.0.1
+git push origin v2.0.1
 ```
 
 The [**Release Windows installer** workflow](.github/workflows/release-windows.yml) builds NSIS x64 and publishes `ClipClip-Windows-<version>-Setup.exe`, its `.exe.blockmap`, and `latest.yml`. The workflow uses its own repository as the source for automatic updates.
@@ -141,4 +141,4 @@ For tests, you can create a self-signed certificate of type `CodeSigningCert`. C
 
 ## License
 
-ClipClip is available under the [MIT License](LICENSE). Component licenses are available in the app's **About** (**О программе**) tab. See [AGENTS.md](AGENTS.md) for repository guidelines.
+ClipClip is developed by Vasilev Viacheslav and distributed under the [MIT License](LICENSE). Copyright © 2026 ClipClip. Component licenses are available in the app's **About** (**О программе**) tab. See [AGENTS.md](AGENTS.md) for repository guidelines.
