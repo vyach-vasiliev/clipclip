@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick, defineAsyncComponent, onMounted, onBeforeUnmount } from 'vue'
 import { mdiContentCopy, mdiDeleteOutline, mdiPause, mdiPlay, mdiUndo, mdiClipboardTextOutline, mdiEyeOutline, mdiClose, mdiPencilOutline, mdiRestore, mdiCheck, mdiFullscreen, mdiFullscreenExit, mdiPlus, mdiMinus, mdiFitToScreenOutline, mdiChevronLeft, mdiChevronRight, mdiAlertCircleOutline, mdiCogOutline, mdiStarOutline, mdiStar } from '@mdi/js'
-import { KIND_LABELS, TAG_LABELS, type ClipboardKind, type ClipboardHistoryItem, type ClipboardTag } from '../../shared/clipboard'
+import { KIND_LABELS, TAG_LABELS, type ClipboardKind, type ClipboardHistoryItem, type ClipboardTag, type QuickPickAction } from '../../shared/clipboard'
 import { useBufferStore } from '../store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags, isEditingTarget, isActionTarget } from '../utils/history'
-import { formatTimestamp, historyDateGroups } from '../utils/timestamps'
+import { formatTimestamp, groupHistory, historyDayLabel } from '../utils/timestamps'
 import { emptyDateTimeFilter, hasDateTimeFilter } from '../utils/dateFilter'
 import SearchPanel from './SearchPanel.vue'
 import AppIcon from './AppIcon.vue'
@@ -13,6 +13,7 @@ import { useTextEditor } from '../composables/textEditor'
 import { useImageZoom } from '../composables/imageZoom'
 import { useImageHoverPreview } from '../composables/imageHoverPreview'
 import { useFileAvailability } from '../composables/fileAvailability'
+import { useHistoryViewport } from '../composables/historyViewport'
 import { colorSwatch } from '../../shared/colors'
 import ColorConverter from './ColorConverter.vue'
 import FileLocations from './FileLocations.vue'
@@ -21,6 +22,7 @@ import { shortcutFromEvent, shortcutLabel, type ShortcutAction } from '../../sha
 
 const SettingsDialog = defineAsyncComponent(() => import('./SettingsDialog.vue'))
 const buffer = useBufferStore()
+const quickPick = ref(false)
 const settingsOpen = ref(false)
 const favoritesOnly = ref(false)
 const ordinaryCount = computed(() => buffer.clipboardHistory.filter(item => !item.pinned).length)
@@ -31,6 +33,7 @@ const dateFilter = ref(emptyDateTimeFilter())
 const searching = computed(() => !!search.value || !!selectedTags.value.length || hasDateTimeFilter(dateFilter.value))
 const selectedId = ref<string | null>(null)
 const searchPanel = ref<InstanceType<typeof SearchPanel>>()
+const searchPanelKey = ref(0)
 const announcement = ref('')
 const copyingId = ref<string | null>(null)
 const previewDialog = ref<HTMLDialogElement>()
@@ -45,18 +48,19 @@ const previewFiles = ref(false)
 const previewIsText = computed(() => previewKind.value !== 'image' && !previewFiles.value)
 const previewOpen = ref(false)
 const colorItem = ref<ClipboardHistoryItem | null>(null)
-const fileAction = ref<{ item: ClipboardHistoryItem; index: number } | null>(null)
+const fileAction = ref<{ id: string; index: number } | null>(null)
+const fileActionItem = computed(() => {
+  const action = fileAction.value
+  return action && buffer.clipboardHistory.find(item => item.id === action.id && item.fileUris?.[action.index])
+})
 function openFileActions(item: ClipboardHistoryItem, index: number) {
   select(item)
-  fileAction.value = { item, index }
+  fileAction.value = { id: item.id, index }
 }
-const colors = computed(() => Object.fromEntries(buffer.clipboardHistory
-  .filter(item => item.type !== 'image' && !item.fileUris)
-  .map(item => [item.id, colorSwatch(item.data)])))
 function openColor(item: ClipboardHistoryItem) { select(item); colorItem.value = item }
 watch(() => buffer.clipboardHistory, items => {
   if (!buffer.busy && colorItem.value && !items.some(item => item.id === colorItem.value?.id && item.data === colorItem.value?.data)) colorItem.value = null
-  if (!buffer.busy && fileAction.value && !items.some(item => item.id === fileAction.value?.item.id)) fileAction.value = null
+  if (!buffer.busy && fileAction.value && !fileActionItem.value) fileAction.value = null
 })
 async function colorCopied(item: ClipboardHistoryItem) {
   colorItem.value = null
@@ -79,17 +83,34 @@ const imageZoom = useImageZoom()
 const { viewport: imageViewport, natural: imageNatural, scale: imageScale, percent: imagePercent, imageStyle, canvasStyle, dragging, canPan } = imageZoom
 let unsubscribeShown: (() => void) | undefined
 let unsubscribeFullscreen: (() => void) | undefined
+let unsubscribeQuickPick: (() => void) | undefined
+let unsubscribeQuickPickAction: (() => void) | undefined
 let announcementTimer: ReturnType<typeof setTimeout> | undefined
+let promotingFullWindow = false
 const sectionHistory = computed(() => buffer.clipboardHistory.filter(item => !!item.pinned === favoritesOnly.value))
 const allTags = computed(() => historyTags(sectionHistory.value))
 const filtered = computed(() => filterHistory(sectionHistory.value, search.value, selectedTags.value, dateFilter.value))
+const filteredIds = computed(() => filtered.value.map(item => item.id))
 const { preview: hoverImage, style: hoverImageStyle, schedule: scheduleImageHover, cancel: cancelImageHover } = useImageHoverPreview(filtered,
   computed(() => !buffer.busy && !buffer.loading && !settingsOpen.value && !previewOpen.value && !colorItem.value && !fileAction.value))
-function historyScrolled() { cancelImageHover(); refreshFiles() }
 const historyList = ref<HTMLElement>()
 watch(favoritesOnly, async () => { await nextTick(); historyList.value?.scrollTo({ top: 0 }) })
-const datedHistory = computed(() => historyDateGroups(filtered.value, buffer.timeFormat))
-const { states: fileStates, refresh: refreshFiles, update: updateFileState } = useFileAvailability(filtered, historyList)
+const groupedHistory = computed(() => groupHistory(filtered.value))
+const { displayed, observeRow, trackFocus, updateViewport } = useHistoryViewport(groupedHistory, historyList, selectedId)
+const datedHistory = computed(() => displayed.value.groups.map(({ group, rows, before, after }) => ({
+  ...group, before, after,
+  dateLabel: group.pinned ? 'Избранное' : historyDayLabel(group.records[0].createdAt),
+  rows: rows.map(({ item, position, before }) => ({
+    item, position, before, ...formatTimestamp(item.createdAt, buffer.timeFormat),
+    label: recordLabel(item), swatch: item.type !== 'image' && !item.fileUris ? colorSwatch(item.data) : null,
+  })),
+})))
+
+function onHistoryScroll() {
+  cancelImageHover()
+  updateViewport()
+}
+const { states: fileStates, update: updateFileState } = useFileAvailability(computed(() => buffer.clipboardHistory))
 const selected = computed(() => filtered.value.find(item => item.id === selectedId.value))
 const previewItems = computed(() => sectionHistory.value.filter(item => item.type === previewKind.value))
 const previewIndex = computed(() => previewItems.value.findIndex(item => item.id === previewId.value))
@@ -104,9 +125,15 @@ function recordLabel(item: ClipboardHistoryItem) {
   return item.type !== 'image' ? KIND_LABELS[item.type] + ': ' + (item.data.trim() ? shortText(item).slice(0, 160).replace(/\s+/g, ' ') : 'Пробелы и переносы строк')
     : 'Изображение, ' + item.params.size
 }
+const recordActionLabel = computed(() => quickPick.value || buffer.pasteOnSelectActive ? 'Вставить в активное окно' : 'Скопировать и скрыть')
 
-watch(() => filtered.value.map(item => item.id), ids => {
-  if (!selectedId.value || !ids.includes(selectedId.value)) selectedId.value = ids[0] ?? null
+watch(filteredIds, ids => {
+  if (selectedId.value && ids.includes(selectedId.value)) return
+  selectedId.value = ids[0] ?? null
+  if (historyList.value) {
+    historyList.value.scrollTop = 0
+    updateViewport()
+  }
 }, { immediate: true, flush: 'sync' })
 
 function announce(message: string) {
@@ -161,6 +188,14 @@ async function closePreview() {
   if (!await editor.flush()) return
   await dismissPreview()
 }
+async function discardPreviewDraft() {
+  editor.discard()
+  await dismissPreview()
+}
+function selectPreviewDraft() {
+  textArea.value?.focus()
+  textArea.value?.select()
+}
 async function searchPreviewTag(tag: ClipboardTag) {
   if (!previewOpen.value || buffer.busy || saving.value || filteringPreview.value || navigatingPreview.value) return
   filteringPreview.value = true
@@ -214,18 +249,57 @@ async function copyPreview() {
     if (editor.currentId.value) await copyById(editor.currentId.value, true)
   } else await copy(preview.value, true)
 }
-async function prepareQuickPick() {
+async function prepareWindow() {
+  const quick = quickPick.value
   settingsOpen.value = false
   colorItem.value = null
   fileAction.value = null
-  if (!await editor.flush()) { previewDialog.value?.showModal(); return }
-  if (!await dismissPreview()) return
+  if (quick) {
+    // Remove any modal from the native top layer and keep its draft for the full window.
+    previewDialog.value?.close()
+    cancelImageHover()
+    if (document.querySelector('.date-filter-dialog[open]')) searchPanelKey.value++
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+  } else {
+    if (!await editor.flush()) {
+      if (!quickPick.value) previewDialog.value?.showModal()
+      return
+    }
+    if (quickPick.value || !await dismissPreview()) return
+  }
   clearFilters()
   selectedId.value = filtered.value[0]?.id ?? null
   await nextTick()
-  searchPanel.value?.focus()
-  document.querySelector('.history-list')?.scrollTo({ top: 0 })
-  refreshFiles()
+  if (!quick && !quickPick.value) searchPanel.value?.focus()
+  historyList.value?.scrollTo({ top: 0 })
+}
+function handleQuickPickAction(action: QuickPickAction) {
+  if (!quickPick.value) return
+  if (action === 'dismiss') { void buffer.hide(); return }
+  if (buffer.busy || buffer.loading) return
+  if (action === 'select') void copy(selected.value, true, true)
+  else void move(action === 'next' ? 1 : -1)
+}
+async function focusWindowForControl(event: MouseEvent) {
+  if (!quickPick.value || event.defaultPrevented || !(event.target instanceof Element)) return
+  const control = event.target.closest<HTMLElement>('button, input, select, textarea, summary, a[href]')
+  if (!control || control.matches('.record-select, .hide-window, :disabled')) return
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  if (promotingFullWindow || !window.electronAPI) return
+  promotingFullWindow = true
+  try {
+    await window.electronAPI.openFullWindow()
+    if (quickPick.value || !control.isConnected) return
+    if (previewOpen.value && !previewDialog.value?.open) {
+      if (!await editor.flush()) { previewDialog.value?.showModal(); return }
+      if (!await dismissPreview()) return
+    }
+    control.focus({ preventScroll: true })
+    // Preserve the caret from the original mouse-down inside the search field.
+    if (control.id !== 'history-search') control.click()
+  } catch { buffer.error = 'Не удалось перевести фокус в окно ClipClip.' }
+  finally { promotingFullWindow = false }
 }
 async function copy(item: ClipboardHistoryItem | undefined, hide = false, activate = false) {
   if (item) await copyById(item.id, hide, activate)
@@ -270,7 +344,7 @@ function configuredAction(event: KeyboardEvent) {
   return action
 }
 function captureConfiguredKeys(event: KeyboardEvent) {
-  if (settingsOpen.value || previewOpen.value || colorItem.value || fileAction.value) return
+  if (quickPick.value || settingsOpen.value || previewOpen.value || colorItem.value || fileAction.value) return
   if (!event.ctrlKey && !event.altKey && !event.metaKey && ['Enter', 'Delete'].includes(event.key)) return
   const action = configuredAction(event)
   if (!action) return
@@ -282,16 +356,17 @@ async function remove(item: ClipboardHistoryItem) {
   if (await buffer.remove(item.id)) announce('Запись удалена. Отмена доступна 10 секунд.')
 }
 async function move(direction: number) {
-  selectedId.value = adjacentId(filtered.value.map(item => item.id), selectedId.value, direction)
+  const focusRow = !quickPick.value
+  selectedId.value = adjacentId(filteredIds.value, selectedId.value, direction)
   await nextTick()
   if (selectedId.value) {
     const element = document.getElementById('record-' + selectedId.value)
-    element?.focus({ preventScroll: true })
+    if (focusRow && !quickPick.value) element?.focus({ preventScroll: true })
     element?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
   }
 }
 function capturePreviewKeys(event: KeyboardEvent) {
-  if (settingsOpen.value || colorItem.value || fileAction.value) return
+  if (quickPick.value || settingsOpen.value || colorItem.value || fileAction.value) return
   if (previewOpen.value && !event.isComposing && (event.key === 'Escape'
     || (!editing.value && !isEditingTarget(event.target) && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')))) {
     event.stopImmediatePropagation()
@@ -299,11 +374,13 @@ function capturePreviewKeys(event: KeyboardEvent) {
   }
 }
 function focusSearchOnActivation() {
-  if (!settingsOpen.value && !previewOpen.value && !colorItem.value && !fileAction.value && !document.querySelector('.date-filter-dialog[open]')) searchPanel.value?.focus()
+  if (!quickPick.value && !promotingFullWindow && !settingsOpen.value && !previewOpen.value && !colorItem.value && !fileAction.value && !document.querySelector('.date-filter-dialog[open]')) searchPanel.value?.focus()
 }
 function captureSearchTyping(event: KeyboardEvent) {
-  if (settingsOpen.value || previewOpen.value || colorItem.value || fileAction.value || event.defaultPrevented || isEditingTarget(event.target)) return
+  if (quickPick.value || settingsOpen.value || previewOpen.value || colorItem.value || fileAction.value || event.defaultPrevented || isEditingTarget(event.target)) return
   const altGraph = event.getModifierState('AltGraph')
+  if (!altGraph && event.key === ' ' && event.target instanceof Element
+    && event.target.closest('button, a, summary, input, select, textarea, [role="button"], [role="checkbox"], [role="switch"]')) return
   if ((event.ctrlKey || event.metaKey) && !event.altKey
     && (event.code === 'KeyV' || event.key.toLowerCase() === 'v')) {
     searchPanel.value?.focus()
@@ -317,7 +394,7 @@ function captureSearchTyping(event: KeyboardEvent) {
   searchPanel.value?.insertText(event.key)
 }
 function captureSearchPaste(event: ClipboardEvent) {
-  if (settingsOpen.value || previewOpen.value || colorItem.value || fileAction.value || event.defaultPrevented || isEditingTarget(event.target)) return
+  if (quickPick.value || settingsOpen.value || previewOpen.value || colorItem.value || fileAction.value || event.defaultPrevented || isEditingTarget(event.target)) return
   const text = event.clipboardData?.getData('text/plain')
   if (!text) return
   event.preventDefault()
@@ -325,7 +402,7 @@ function captureSearchPaste(event: ClipboardEvent) {
   searchPanel.value?.insertText(text)
 }
 function handleKeydown(event: KeyboardEvent) {
-  if (settingsOpen.value || colorItem.value || fileAction.value) return
+  if (quickPick.value || settingsOpen.value || colorItem.value || fileAction.value) return
   if (event.defaultPrevented || event.isComposing) return
   const action = configuredAction(event)
   if (action) {
@@ -360,7 +437,9 @@ onMounted(() => {
   document.addEventListener('paste', captureSearchPaste, true)
   document.addEventListener('keydown', handleKeydown)
   window.addEventListener('focus', focusSearchOnActivation)
-  unsubscribeShown = window.electronAPI?.onWindowShown(prepareQuickPick)
+  unsubscribeQuickPick = window.electronAPI?.onQuickPickChanged(value => { quickPick.value = value })
+  unsubscribeQuickPickAction = window.electronAPI?.onQuickPickAction(handleQuickPickAction)
+  unsubscribeShown = window.electronAPI?.onWindowShown(prepareWindow)
   unsubscribeFullscreen = window.electronAPI?.onPreviewFullscreenChanged(value => { fullscreen.value = value })
   searchPanel.value?.focus()
 })
@@ -373,13 +452,15 @@ onBeforeUnmount(() => {
   window.removeEventListener('focus', focusSearchOnActivation)
   unsubscribeShown?.()
   unsubscribeFullscreen?.()
+  unsubscribeQuickPick?.()
+  unsubscribeQuickPickAction?.()
   if (announcementTimer) clearTimeout(announcementTimer)
 })
 </script>
 
 <template>
-  <main class="history-page flex h-full min-h-0 w-full flex-col gap-2.5 px-3.5 pt-2 pb-2.5">
-    <header class="flex shrink-0 items-center gap-2 select-none" :class="{ 'window-drag': !settingsOpen && !previewOpen && !colorItem && !fileAction }">
+  <main class="history-page flex h-full min-h-0 w-full flex-col gap-2.5 px-3.5 pt-2 pb-2.5" :class="{ 'quick-pick': quickPick }" @click.capture="focusWindowForControl">
+    <header class="flex shrink-0 items-center gap-2 select-none" :class="{ 'window-drag': !quickPick && !settingsOpen && !previewOpen && !colorItem && !fileAction }">
       <div class="mr-auto flex items-center gap-2"><AppIcon :path="mdiClipboardTextOutline" class="size-6 text-accent" /><h1 class="text-[17px] font-semibold tracking-tight">ClipClip</h1></div>
       <span class="flex items-center gap-1.5 text-xs text-muted" :title="buffer.persistent ? 'История сохраняется с шифрованием' : 'История только в памяти этой сессии'">
         <span class="size-1.5 rounded-full" :class="buffer.paused ? 'bg-amber-500' : 'bg-emerald-600 dark:bg-emerald-400'" />{{ buffer.paused ? 'Пауза' : 'Запись' }}
@@ -392,11 +473,12 @@ onBeforeUnmount(() => {
     </header>
 
     <p v-if="!buffer.loading && !buffer.persistent" class="shrink-0 text-xs text-muted">История только в памяти этой сессии</p>
-    <p v-if="buffer.error" role="alert" class="shrink-0 rounded-lg bg-danger/10 px-3 py-2 text-xs text-danger">{{ buffer.error }}</p>
+    <p v-if="buffer.error" role="alert" class="error-notice shrink-0 rounded-lg px-3 py-2 text-xs leading-relaxed text-pretty"
+      :class="buffer.pasteWarning ? 'bg-warning-surface text-warning-ink' : 'bg-danger/10 text-danger'">{{ buffer.error }}</p>
     <p v-if="!buffer.loading && !buffer.shortcutAvailable" class="shrink-0 text-xs leading-snug text-accent">
       {{ shortcutLabel(buffer.shortcuts.openWindow) }} недоступна. Откройте окно через значок ClipClip.
     </p>
-    <SearchPanel ref="searchPanel" v-model="search" v-model:selected-tags="selectedTags" v-model:date-filter="dateFilter" v-model:favorites-only="favoritesOnly" :favorites-shortcut="shortcutLabel(buffer.shortcuts.showFavorites)" :result-count="filtered.length" :all-tags="allTags" />
+    <SearchPanel :key="searchPanelKey" ref="searchPanel" v-model="search" v-model:selected-tags="selectedTags" v-model:date-filter="dateFilter" v-model:favorites-only="favoritesOnly" :favorites-shortcut="shortcutLabel(buffer.shortcuts.showFavorites)" :result-count="filtered.length" :all-tags="allTags" />
 
     <section class="history-section flex min-h-0 flex-1 flex-col" aria-labelledby="history-title" :aria-busy="buffer.loading">
       <div class="flex shrink-0 items-center justify-end gap-2 pb-1">
@@ -411,25 +493,29 @@ onBeforeUnmount(() => {
         <button v-if="searching" type="button" class="text-button" @click="clearFilters">Сбросить поиск и фильтры</button>
       </div>
 
-      <div v-else ref="historyList" class="history-list -mx-0.5 flex min-h-0 scroll-pt-10 flex-col gap-2 overflow-y-auto p-0.5" @scroll.passive="historyScrolled">
-        <div v-for="{ key, pinned, day, dateLabel, records } in datedHistory" :key="key" class="history-date-group shrink-0" role="group" :aria-label="dateLabel" :data-date-group="day">
+      <div v-else ref="historyList" class="history-list -mx-0.5 flex min-h-0 scroll-pt-10 flex-col overflow-y-auto p-0.5"
+        @scroll.passive="onHistoryScroll" @focusin="trackFocus" @focusout="trackFocus">
+        <div v-for="{ key, pinned, day, dateLabel, records, rows, before, after } in datedHistory" :key="key" class="history-date-group shrink-0"
+          role="group" :aria-label="dateLabel" :data-date-group="day" :style="before ? { marginTop: before + 'px' } : undefined">
           <div v-if="!pinned" class="history-date pointer-events-none sticky top-0 z-10 flex justify-center text-[11px] font-medium text-muted">
-            <button v-if="day" type="button" class="history-date-button pointer-events-auto min-h-10 rounded text-accent tabular-nums"
+            <button v-if="day" type="button" class="history-date-button pointer-events-auto min-h-10 rounded text-accent tabular-nums" :data-history-date-key="key"
               :aria-label="'Показать записи за ' + dateLabel" title="Показать записи за этот день" @click="filterDay(day)"><time :datetime="day" class="history-date-label inline-block rounded px-1.5 py-0.5">{{ dateLabel }}</time></button>
             <span v-else class="flex min-h-10 items-center"><span class="history-date-label inline-block rounded px-1.5 py-0.5">{{ dateLabel }}</span></span>
           </div>
-          <ul class="flex flex-col gap-2">
-            <li v-for="{ item, datetime, date, time } in records" :key="item.id" :data-file-id="item.fileUris ? item.id : undefined">
+          <ul class="flex flex-col">
+            <li v-for="{ item, datetime, date, time, before: rowGap, position, label, swatch } in rows" :key="item.id"
+              :ref="element => observeRow(item.id, element as Element | null)" :data-history-row="item.id"
+              :aria-posinset="position + 1" :aria-setsize="records.length" :style="rowGap ? { marginTop: rowGap + 'px' } : undefined">
           <article class="clipboard-record group/record relative flex items-center overflow-hidden rounded-lg hover:bg-accent/4 focus-within:bg-accent/10"
             :class="item.id === selectedId ? 'selected bg-selected' : 'bg-surface'">
             <FileLocations v-if="item.fileUris" :item="item" @open="openFileActions(item, $event)" />
-            <button v-if="colors[item.id]" type="button" class="color-swatch icon-button ml-1" :disabled="buffer.busy"
+            <button v-if="swatch" type="button" class="color-swatch icon-button ml-1" :disabled="buffer.busy"
               :aria-label="'Конвертировать цвет ' + item.data.trim()" title="Конвертировать цвет — нажмите, чтобы выбрать формат для копирования"
               aria-haspopup="dialog" @click="openColor(item)">
-              <span class="color-checker block size-5 overflow-hidden rounded" aria-hidden="true"><span class="block size-full" :style="{ backgroundColor: colors[item.id] ?? undefined }" /></span>
+              <span class="color-checker block size-5 overflow-hidden rounded" aria-hidden="true"><span class="block size-full" :style="{ backgroundColor: swatch }" /></span>
             </button>
             <button :id="'record-' + item.id" type="button" class="record-select block min-h-[78px] min-w-0 flex-1 rounded-md px-3 py-2.5 text-left focus-visible:outline-none disabled:cursor-wait"
-              :aria-pressed="item.id === selectedId" :aria-label="(buffer.pasteOnSelect ? 'Вставить в активное окно. ' : 'Скопировать и скрыть. ') + recordLabel(item) + ', ' + item.params.source.name" :title="buffer.pasteOnSelect ? 'Вставить в активное окно' : 'Скопировать и скрыть'"
+              :aria-pressed="item.id === selectedId" :aria-label="recordActionLabel + '. ' + label + ', ' + item.params.source.name" :title="recordActionLabel"
               :disabled="buffer.busy" :tabindex="item.id === selectedId ? 0 : -1" @focus="select(item)" @click="select(item); copy(item, true, true)">
               <p v-if="item.type !== 'image'" class="text-preview line-clamp-2 pr-25 text-[13px] leading-snug whitespace-pre-wrap wrap-anywhere">
                 <span v-if="!item.data.trim()" class="text-muted">Пробелы и переносы строк</span>
@@ -455,15 +541,17 @@ onBeforeUnmount(() => {
             </button>
             <div class="record-actions pointer-events-none absolute top-1 right-1 flex items-center gap-0.5 opacity-0 group-hover/record:pointer-events-auto group-hover/record:opacity-100 group-focus-within/record:pointer-events-auto group-focus-within/record:opacity-100" role="group" aria-label="Действия записи">
               <button type="button" class="favorite-button icon-button size-8" :class="item.pinned ? 'text-accent' : ''"
-                :aria-pressed="!!item.pinned" :aria-label="(item.pinned ? 'Убрать из избранного. ' : 'Добавить в избранное. ') + recordLabel(item)"
+                :aria-pressed="!!item.pinned" :aria-label="(item.pinned ? 'Убрать из избранного. ' : 'Добавить в избранное. ') + label"
                 :title="item.pinned ? 'Убрать из избранного' : 'В избранное — сохранить сверх лимита'" :disabled="buffer.busy" @focus="select(item)" @click="toggleFavorite(item)"><AppIcon :path="item.pinned ? mdiStar : mdiStarOutline" class="size-4" /></button>
-              <button type="button" class="preview-button icon-button size-8" :aria-label="'Просмотреть запись. ' + recordLabel(item)" title="Полный просмотр" @click="openPreview(item)"><AppIcon :path="mdiEyeOutline" class="size-4" /></button>
-              <button type="button" class="delete-button icon-button size-8 hover:text-danger" :disabled="buffer.busy" :aria-label="'Удалить запись. ' + recordLabel(item)" title="Удалить" @click="remove(item)"><AppIcon :path="mdiDeleteOutline" class="size-4" /></button>
+              <button type="button" class="preview-button icon-button size-8" :aria-label="'Просмотреть запись. ' + label" title="Полный просмотр" @click="openPreview(item)"><AppIcon :path="mdiEyeOutline" class="size-4" /></button>
+              <button type="button" class="delete-button icon-button size-8 hover:text-danger" :disabled="buffer.busy" :aria-label="'Удалить запись. ' + label" title="Удалить" @click="remove(item)"><AppIcon :path="mdiDeleteOutline" class="size-4" /></button>
             </div>
           </article>
             </li>
+            <li v-if="after" :style="{ height: after + 'px' }" aria-hidden="true" />
           </ul>
         </div>
+        <div v-if="displayed.after" class="shrink-0" :style="{ height: displayed.after + 'px' }" aria-hidden="true" />
       </div>
     </section>
 
@@ -476,7 +564,7 @@ onBeforeUnmount(() => {
       <button v-if="buffer.canUndo" type="button" class="text-button" :disabled="buffer.busy" @click="buffer.undo"><AppIcon :path="mdiUndo" class="size-4" />Отменить удаление</button>
     </div>
     <footer class="flex shrink-0 justify-between gap-1.5 border-t border-line pt-2 text-[11px] text-muted" aria-label="Горячие клавиши">
-      <span><kbd>↑</kbd><kbd>↓</kbd> выбор</span><span><kbd>{{ shortcutLabel(buffer.shortcuts.copySelected) }}</kbd> {{ buffer.pasteOnSelect ? 'вставить' : 'копировать' }}</span><span><kbd>Esc</kbd> скрыть</span>
+      <span><kbd>↑</kbd><kbd>↓</kbd> выбор</span><span><kbd>{{ quickPick ? 'Enter' : shortcutLabel(buffer.shortcuts.copySelected) }}</kbd> {{ quickPick || buffer.pasteOnSelectActive ? 'вставить' : 'копировать' }}</span><span><kbd>Esc</kbd> скрыть</span>
     </footer>
 
     <dialog ref="previewDialog" class="preview-dialog" :class="{ 'is-fullscreen': fullscreen }" aria-labelledby="preview-title" @keydown.stop="handlePreviewKeydown" @cancel.prevent="closePreview">
@@ -535,14 +623,21 @@ onBeforeUnmount(() => {
       </div>
       <p v-else>Запись уже удалена.</p>
       <p v-if="saveError" class="text-xs text-danger" role="alert">{{ saveError }}</p>
+      <p v-else-if="editing && !preview" class="text-xs text-danger" role="alert">Редактируемая запись больше не в истории.</p>
       <p v-else-if="buffer.error" class="text-xs text-danger" role="alert">{{ buffer.error }}</p>
       <p v-else-if="editing" class="text-[11px] text-muted" role="status">{{ saving ? 'Сохраняется…' : draft !== savedText ? 'Есть изменения…' : 'Версии сохраняются в истории' }}</p>
+      <div v-if="editing && (saveError || !preview)" class="flex shrink-0 flex-wrap gap-1">
+        <button v-if="!preview" type="button" class="text-button" :disabled="buffer.busy || saving" @click="editor.saveAsNew">Сохранить новой записью</button>
+        <button type="button" class="text-button" @click="selectPreviewDraft">Выделить текст для копирования</button>
+        <button type="button" class="text-button" :disabled="saving" @click="discardPreviewDraft">Закрыть без сохранения</button>
+      </div>
       <button v-if="previewKind !== 'image' || preview" type="button" class="primary-button" :aria-busy="saving || copyingId !== null" :disabled="buffer.busy || saving" @click="copyPreview">
         <AppIcon :path="mdiContentCopy" />{{ saving ? 'Сохраняется…' : copyingId !== null ? 'Копируется…' : 'Копировать и скрыть' }}
       </button>
     </dialog>
     <SettingsDialog v-if="settingsOpen" @close="settingsOpen = false" />
     <ColorConverter v-if="colorItem" :id="colorItem.id" :text="colorItem.data" @close="colorItem = null" @copied="colorCopied" />
-    <FileActions v-if="fileAction" :item="fileAction.item" :index="fileAction.index" @close="fileAction = null" @copied="pathCopied" />
+    <FileActions v-if="fileAction && fileActionItem" :item="fileActionItem" :index="fileAction.index" @close="fileAction = null"
+      @copied="pathCopied" @checked="updateFileState" />
   </main>
 </template>

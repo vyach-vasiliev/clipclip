@@ -9,6 +9,7 @@ export const BACKUP_MANIFEST_VERSION = 1
 export interface BackupSettings {
   historyLimit: number
   pasteOnSelect?: boolean
+  promoteCopiedRecords?: boolean
   timeFormat?: TimeFormat
   paused: boolean
   shortcuts: ShortcutSettings

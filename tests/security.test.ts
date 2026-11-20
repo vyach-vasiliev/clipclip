@@ -26,6 +26,7 @@ describe('renderer trust boundary', () => {
   })
   it('validates revision payloads and limits UTF-8 bytes', () => {
     expect(requireTextRevision({ id: 'one', text: '' })).toEqual({ id: 'one', text: '' })
+    expect(requireTextRevision({ id: null, text: 'draft' })).toEqual({ id: null, text: 'draft' })
     for (const payload of [null, { id: '' }, { id: 'one', text: 1 }, { id: 'one', text: 'я'.repeat(MAX_ITEM_BYTES / 2 + 1) }]) {
       expect(() => requireTextRevision(payload)).toThrow()
     }

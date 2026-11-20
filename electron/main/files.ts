@@ -22,7 +22,7 @@ export class FileChecker {
     } finally { this.active-- }
   }
 
-  async check(uris: string[]): Promise<FileCheckResult> {
+  async check(uris: string[], single = false): Promise<FileCheckResult> {
     if (!isFileUriList(uris)) throw new Error('Некорректный список файлов.')
     let next = 0
     let expired = false
@@ -43,17 +43,17 @@ export class FileChecker {
     const timeout = new Promise<FileCheckResult>(resolve => {
       timer = setTimeout(() => {
         expired = true
-        resolve({ status: 'unavailable', kinds: [...kinds], message: 'Проверка файлов заняла слишком много времени. Проверьте подключение к диску и повторите попытку.' })
+        resolve({ status: 'unavailable', kinds: [...kinds], message: `Проверка ${single ? 'пути' : 'файлов'} заняла слишком много времени. Проверьте подключение к диску и повторите попытку.` })
       }, TIMEOUT_MS)
     })
     const checked = Promise.all(Array.from({ length: Math.min(4, uris.length) }, worker)).then((): FileCheckResult => {
       if (missing.length) {
         const names = missing.slice(0, 3).map(uri => decodeURIComponent(new URL(uri).pathname).split('/').filter(Boolean).at(-1)).join(', ')
-        return { status: 'missing', kinds: [...kinds], message: `Файл или папка больше не существует: ${names}${missing.length > 3 ? ` и ещё ${missing.length - 3}` : ''}. Копирование списка невозможно.` }
+        return { status: 'missing', kinds: [...kinds], message: `Файл или папка больше не существует: ${names}${missing.length > 3 ? ` и ещё ${missing.length - 3}` : ''}.${single ? '' : ' Копирование списка невозможно.'}` }
       }
       return unavailable
-        ? { status: 'unavailable', kinds: [...kinds], message: 'Не удалось проверить доступность всех файлов и папок. Проверьте права доступа и подключение к диску.' }
-        : { status: 'available', kinds: [...kinds], message: 'Все файлы и папки доступны.' }
+        ? { status: 'unavailable', kinds: [...kinds], message: `Не удалось проверить доступность ${single ? 'выбранного пути' : 'всех файлов и папок'}. Проверьте права доступа и подключение к диску.` }
+        : { status: 'available', kinds: [...kinds], message: single ? 'Выбранный путь доступен.' : 'Все файлы и папки доступны.' }
     })
     try { return await Promise.race([checked, timeout]) }
     finally { clearTimeout(timer) }
@@ -65,10 +65,14 @@ export class FileChecker {
     return result
   }
 
-  async reveal(uris: string[], index: number, show: (path: string) => void): Promise<FileCheckResult> {
+  checkPath(uris: string[], index: number): Promise<FileCheckResult> {
     if (!isFileUriList(uris) || !Number.isInteger(index) || index < 0 || index >= uris.length) throw new Error('Некорректный путь записи.')
-    const result = await this.check([uris[index]])
+    return this.check([uris[index]], true)
+  }
+
+  async reveal(uris: string[], index: number, show: (path: string) => void): Promise<FileCheckResult> {
+    const result = await this.checkPath(uris, index)
     if (result.status === 'available') show(fileURLToPath(uris[index]))
-    return { status: result.status, message: result.message.replace('Копирование списка невозможно.', 'Открытие в Проводнике невозможно.') }
+    return { status: result.status, message: result.message + (result.status === 'missing' ? ' Открытие в Проводнике невозможно.' : '') }
   }
 }

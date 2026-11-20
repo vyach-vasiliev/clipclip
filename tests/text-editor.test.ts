@@ -8,7 +8,7 @@ import type { ClipboardHistoryItem } from '../shared/clipboard'
 const item = (id: string, data: string): ClipboardHistoryItem => ({ id, data, type: 'text', createdAt: 1,
   params: { size: data.length + ' симв.', type: 'text', source: { name: 'Fixture', title: '' }, tags: [] } })
 const wrappers: ReturnType<typeof mount>[] = []
-function setup(save = vi.fn(async (_id: string, text: string) => item(text, text))) {
+function setup(save = vi.fn(async (_id: string | null, text: string) => item(text, text))) {
   let editor!: ReturnType<typeof useTextEditor>
   const wrapper = mount(defineComponent({ setup() { editor = useTextEditor(save); return () => null } }))
   wrappers.push(wrapper)
@@ -42,7 +42,7 @@ describe('text version editor', () => {
   })
   it('serializes pending saves and preserves changes typed during a request', async () => {
     let finish!: (item: ClipboardHistoryItem) => void
-    const save = vi.fn(async (_id: string, text: string) => item(text, text))
+    const save = vi.fn(async (_id: string | null, text: string) => item(text, text))
     save.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
     const { editor } = setup(save)
     await editor.toggle()
@@ -66,5 +66,28 @@ describe('text version editor', () => {
     expect(editor.saveError.value).toBeTruthy()
     expect(await editor.flush()).toBe(true)
     expect(editor.saveError.value).toBe('')
+  })
+  it('preserves a failed draft and supports saving it as a standalone record', async () => {
+    const { editor, save } = setup()
+    await editor.toggle()
+    editor.draft.value = 'recover this'
+    save.mockRejectedValueOnce(new Error('source evicted'))
+    expect(await editor.flush()).toBe(false)
+    expect(editor.savedText.value).toBe('hello')
+    expect(await editor.saveAsNew()).toBe(true)
+    expect(save.mock.calls).toEqual([['original', 'recover this'], [null, 'recover this']])
+    expect(editor.currentId.value).toBe('recover this')
+    expect(editor.savedText.value).toBe('recover this')
+  })
+  it('discards a draft and cancels its pending autosave', async () => {
+    vi.useFakeTimers()
+    const { editor, save } = setup()
+    await editor.toggle()
+    editor.draft.value = 'discard this'
+    editor.discard()
+    await vi.advanceTimersByTimeAsync(700)
+    expect(save).not.toHaveBeenCalled()
+    expect(editor.draft.value).toBe('hello')
+    expect(editor.editing.value).toBe(false)
   })
 })

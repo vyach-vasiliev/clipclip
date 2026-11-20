@@ -7,6 +7,7 @@ const [profile, parentArg] = process.argv.slice(-2)
 const parentPid = Number(parentArg)
 const commandFile = path.join(profile, 'commands.jsonl')
 const eventFile = path.join(profile, 'events.jsonl')
+const clipboardFile = path.join(profile, 'clipboard.json')
 
 function report(type, data) {
   appendFileSync(eventFile, JSON.stringify({ type, ...data }) + '\n')
@@ -18,14 +19,32 @@ async function run() {
   await app.whenReady()
   const user32 = koffi.load('user32.dll')
   const allowForeground = user32.func('int __stdcall AllowSetForegroundWindow(uint32_t pid)')
+  const setForeground = user32.func('int __stdcall SetForegroundWindow(uintptr_t window)')
   const window = new BrowserWindow({ show: false, title: 'Synthetic paste target', webPreferences: { sandbox: true } })
-  await window.loadURL('data:text/html,<title>Synthetic paste target</title><input autofocus>')
+  await window.loadURL('data:text/html,<title>Synthetic paste target</title><input id="paste-target" value="Synthetic document" autofocus>')
+  await window.webContents.executeJavaScript(`(() => {
+    const field = document.getElementById('paste-target')
+    field.setSelectionRange(7, 7)
+    let blurCount = 0
+    window.addEventListener('blur', () => { blurCount++ })
+    window.readFixtureFocus = () => ({
+      pageFocused: document.hasFocus(),
+      fieldFocused: document.activeElement === field,
+      selectionStart: field.selectionStart,
+      selectionEnd: field.selectionEnd,
+      blurCount,
+    })
+  })()`)
   window.setMenu(null)
+  const handle = window.getNativeWindowHandle()
+  const hwnd = handle.length === 8 ? handle.readBigUInt64LE() : BigInt(handle.readUInt32LE())
+  let navigationKeys = 0
   window.webContents.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && ['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(input.key)) navigationKeys++
     if (!input.control || input.code !== 'KeyV') return
-    // Report receipt without ever reading or changing the real system clipboard.
+    // Consume only the isolated fixture clipboard when the real shortcut reaches this window.
     event.preventDefault()
-    if (input.type === 'keyDown') report('paste')
+    if (input.type === 'keyDown') report('paste', JSON.parse(readFileSync(clipboardFile, 'utf8')))
   })
 
   let commandsRead = 0
@@ -36,6 +55,15 @@ async function run() {
       const { id, type } = JSON.parse(entry)
       if (type === 'quit') { app.quit(); return }
       if (type === 'grant') report('grant', { id, granted: Boolean(allowForeground(parentPid)) })
+      if (type === 'focus') {
+        window.focus()
+        report('focus', { id, requested: Boolean(setForeground(hwnd)) })
+      }
+      if (type === 'focus-state') {
+        void window.webContents.executeJavaScript('window.readFixtureFocus()')
+          .then(state => report('focus-state', { id, ...state, navigationKeys }))
+          .catch(error => report('error', { error: String(error.stack ?? error) }))
+      }
     }
   }, 40)
   const parentTimer = setInterval(() => {
@@ -45,8 +73,6 @@ async function run() {
   app.once('before-quit', () => { clearInterval(commandTimer); clearInterval(parentTimer) })
   window.show()
   window.focus()
-  const handle = window.getNativeWindowHandle()
-  const hwnd = handle.length === 8 ? handle.readBigUInt64LE() : BigInt(handle.readUInt32LE())
   report('ready', { hwnd: String(hwnd), pid: process.pid })
 }
 

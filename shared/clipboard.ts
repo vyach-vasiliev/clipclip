@@ -12,7 +12,7 @@ export interface FileCheckResult {
   kinds?: FileKind[]
 }
 
-export type ItemActivationResult = FileCheckResult | { status: 'paste-unavailable'; message: string }
+export type ItemActivationResult = FileCheckResult | { status: 'paste-unavailable'; message: string; canPasteManually?: true }
 
 export interface ClipboardTag {
   code: 'size' | 'type' | 'source'
@@ -60,6 +60,8 @@ export interface HistoryState {
   items: ClipboardHistoryItem[]
   historyLimit: number
   pasteOnSelect: boolean
+  pasteAvailable: boolean
+  promoteCopiedRecords: boolean
   timeFormat: TimeFormat
   shortcuts: ShortcutSettings
   paused: boolean
@@ -69,21 +71,25 @@ export interface HistoryState {
   error: string | null
 }
 
+export type QuickPickAction = 'previous' | 'next' | 'select' | 'dismiss'
+
 export interface ElectronAPI {
   getHistory(): Promise<HistoryState>
   onHistoryChanged(callback: (state: HistoryState) => void): () => void
   activateItem(id: string): Promise<void | ItemActivationResult>
   copyItem(id: string): Promise<void | FileCheckResult>
   copyColor(id: string, format: ColorFormat): Promise<ClipboardHistoryItem>
-  checkFiles(id: string): Promise<FileCheckResult>
+  checkFile(id: string, index: number): Promise<FileCheckResult>
   revealFile(id: string, index: number): Promise<FileCheckResult>
   copyFilePath(id: string, index: number): Promise<ClipboardHistoryItem>
-  saveTextRevision(id: string, text: string): Promise<ClipboardHistoryItem>
+  // A null ID saves a draft as a standalone history item.
+  saveTextRevision(id: string | null, text: string): Promise<ClipboardHistoryItem>
   deleteItem(id: string): Promise<void>
   undoDelete(): Promise<void>
   setPaused(paused: boolean): Promise<void>
-  setHistoryLimit(limit: number): Promise<void>
+  setHistoryLimit(limit: number, maxRemoved?: number): Promise<void>
   setPasteOnSelect(enabled: boolean): Promise<void>
+  setPromoteCopiedRecords(enabled: boolean): Promise<void>
   setTimeFormat(format: TimeFormat): Promise<void>
   resetSettings(): Promise<void>
   setPinned(id: string, pinned: boolean): Promise<void>
@@ -93,9 +99,12 @@ export interface ElectronAPI {
   setShortcuts(shortcuts: ShortcutSettings): Promise<void>
   setShortcutCapture(active: boolean): Promise<void>
   hideWindow(): Promise<void>
+  openFullWindow(): Promise<void>
   setPreviewFullscreen(fullscreen: boolean): Promise<void>
   onPreviewFullscreenChanged(callback: (fullscreen: boolean) => void): () => void
   onWindowShown(callback: () => void): () => void
+  onQuickPickChanged(callback: (active: boolean) => void): () => void
+  onQuickPickAction(callback: (action: QuickPickAction) => void): () => void
 }
 
 export const CHANNELS = {
@@ -104,7 +113,7 @@ export const CHANNELS = {
   activateItem: 'history:activate',
   copyItem: 'history:copy',
   copyColor: 'history:copy-color',
-  checkFiles: 'history:check-files',
+  checkFile: 'history:check-file',
   revealFile: 'history:reveal-file',
   copyFilePath: 'history:copy-file-path',
   saveTextRevision: 'history:save-text-revision',
@@ -113,6 +122,7 @@ export const CHANNELS = {
   setPaused: 'history:pause',
   setHistoryLimit: 'history:set-limit',
   setPasteOnSelect: 'settings:paste-on-select',
+  setPromoteCopiedRecords: 'settings:promote-copied-records',
   setTimeFormat: 'settings:time-format',
   resetSettings: 'settings:reset',
   setPinned: 'history:set-pinned',
@@ -122,7 +132,10 @@ export const CHANNELS = {
   setShortcuts: 'settings:shortcuts',
   setShortcutCapture: 'settings:shortcut-capture',
   hideWindow: 'window:hide',
+  openFullWindow: 'window:open-full',
   windowShown: 'window:shown',
+  quickPickChanged: 'window:quick-pick-changed',
+  quickPickAction: 'window:quick-pick-action',
   setPreviewFullscreen: 'window:preview-fullscreen',
   previewFullscreenChanged: 'window:preview-fullscreen-changed',
 } as const

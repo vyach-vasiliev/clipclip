@@ -17,12 +17,18 @@ const tabs = { general: 'Основные', shortcuts: 'Горячие клав�
 const tab = ref<keyof typeof tabs>('general')
 const clearDialog = ref<HTMLDialogElement>()
 const resetDialog = ref<HTMLDialogElement>()
+const limitDialog = ref<HTMLDialogElement>()
 const actionNotice = ref('')
 const importSettings = ref(false)
 async function changePasteOnSelect(event: Event) {
   const input = event.target as HTMLInputElement
-  await buffer.setPasteOnSelect(input.checked)
-  input.checked = buffer.pasteOnSelect
+  if (buffer.pasteAvailable) await buffer.setPasteOnSelect(input.checked)
+  input.checked = buffer.pasteOnSelectActive
+}
+async function changePromoteCopiedRecords(event: Event) {
+  const input = event.target as HTMLInputElement
+  await buffer.setPromoteCopiedRecords(input.checked)
+  input.checked = buffer.promoteCopiedRecords
 }
 async function changeTimeFormat(event: Event) {
   const select = event.target as HTMLSelectElement
@@ -60,6 +66,9 @@ const limit = ref<number | string>(buffer.historyLimit)
 const saveStatus = ref<'idle' | 'pending' | 'saving' | 'saved' | 'error'>('idle')
 const valid = computed(() => isHistoryLimit(limit.value))
 const changed = computed(() => limit.value !== buffer.historyLimit)
+const recordsToRemove = computed(() => isHistoryLimit(limit.value) ? Math.max(0, ordinaryCount.value - limit.value) : 0)
+const needsLimitConfirmation = computed(() => changed.value && recordsToRemove.value > 0)
+const limitConfirmation = ref<{ limit: number; maxRemoved: number }>()
 let saveTimer: ReturnType<typeof setTimeout> | undefined
 let inFlight: Promise<boolean> | undefined
 let disposed = false
@@ -67,10 +76,10 @@ function cancelTimer() { clearTimeout(saveTimer); saveTimer = undefined }
 function scheduleSave() {
   actionNotice.value = ''
   cancelTimer()
-  saveStatus.value = valid.value && changed.value ? 'pending' : 'idle'
+  saveStatus.value = valid.value && changed.value && !needsLimitConfirmation.value ? 'pending' : 'idle'
   if (saveStatus.value === 'pending' && !disposed) saveTimer = setTimeout(() => { void save() }, 600)
 }
-watch(limit, scheduleSave)
+watch([limit, needsLimitConfirmation], scheduleSave)
 watch(() => buffer.historyLimit, (value, previous) => {
   if (limit.value === previous) limit.value = value
 })
@@ -78,18 +87,43 @@ watch([() => buffer.busy, () => buffer.loading], ([busy, loading]) => {
   if (!busy && !loading && !inFlight && !saveTimer && saveStatus.value === 'pending') void save()
 })
 
-async function save() {
+async function save(confirmation?: { limit: number; maxRemoved: number }): Promise<boolean> {
   cancelTimer()
-  if (inFlight) { await inFlight; return save() }
-  if (!valid.value || !changed.value) return
-  if (buffer.busy || buffer.loading) { saveStatus.value = 'pending'; return }
-  const value = limit.value as number
+  if (inFlight) { await inFlight; return save(confirmation) }
+  const value = limit.value
+  if (!isHistoryLimit(value) || !changed.value) return false
+  if (confirmation && value !== confirmation.limit) return false
+  if (recordsToRemove.value > (confirmation?.maxRemoved ?? 0)) return false
+  if (buffer.busy || buffer.loading) { saveStatus.value = 'pending'; return false }
   saveStatus.value = 'saving'
-  inFlight = buffer.setHistoryLimit(value)
+  inFlight = buffer.setHistoryLimit(value, confirmation?.maxRemoved)
   const applied = await inFlight
   inFlight = undefined
   if (limit.value !== value) scheduleSave()
   else saveStatus.value = applied ? 'saved' : 'error'
+  return applied
+}
+async function openLimitConfirmation() {
+  const value = limit.value
+  if (!isHistoryLimit(value) || !needsLimitConfirmation.value || buffer.busy || buffer.loading) return
+  cancelTimer()
+  limitConfirmation.value = { limit: value, maxRemoved: recordsToRemove.value }
+  await nextTick()
+  if (!disposed && limitConfirmation.value?.limit === value && !limitDialog.value?.open) limitDialog.value?.showModal()
+}
+function closeLimitConfirmation() {
+  limitDialog.value?.close()
+  limitConfirmation.value = undefined
+}
+async function applyConfirmedLimit() {
+  const confirmation = limitConfirmation.value
+  if (!confirmation || buffer.busy || buffer.loading) return
+  if (limit.value !== confirmation.limit || !changed.value) { closeLimitConfirmation(); return }
+  if (recordsToRemove.value > confirmation.maxRemoved) {
+    limitConfirmation.value = { ...confirmation, maxRemoved: recordsToRemove.value }
+    return
+  }
+  if (await save(confirmation)) closeLimitConfirmation()
 }
 async function resetSettings() {
   if (buffer.busy || buffer.loading) return
@@ -119,6 +153,7 @@ onBeforeUnmount(() => {
   void save()
   clearDialog.value?.close()
   resetDialog.value?.close()
+  closeLimitConfirmation()
   dialog.value?.close()
 })
 </script>
@@ -131,7 +166,7 @@ onBeforeUnmount(() => {
       <button type="button" class="icon-button" aria-label="Закрыть настройки" autofocus @click="close"><AppIcon :path="mdiClose" /></button>
     </header>
     <div class="settings-notice shrink-0 rounded-lg bg-accent/8 px-3 py-2 text-xs leading-relaxed text-accent" role="status" aria-live="polite">
-      <p>Настройки применяются автоматически.</p>
+      <p>Настройки применяются автоматически. Удаление записей при смене лимита требует подтверждения.</p>
       <p v-if="actionNotice">{{ actionNotice }}</p>
       <p v-else-if="!valid" class="text-danger">Введите целое число от 1 до {{ MAX_HISTORY_LIMIT.toLocaleString('ru-RU') }}.</p>
       <p v-else-if="saveStatus === 'pending'">Ожидание завершения ввода…</p>
@@ -149,11 +184,17 @@ onBeforeUnmount(() => {
     <section v-show="tab === 'general'" id="settings-general" role="tabpanel" aria-labelledby="settings-general-tab" class="min-h-0 flex-1 overflow-auto" tabindex="0">
       <div class="flex flex-col gap-3">
         <label class="flex items-start gap-2 border-b border-line pb-3 text-[13px] leading-relaxed">
-          <input id="paste-on-select" type="checkbox" class="mt-1 accent-accent" :checked="buffer.pasteOnSelect"
-            :disabled="buffer.busy || buffer.loading" @change="changePasteOnSelect" />
+          <input id="paste-on-select" type="checkbox" class="mt-1 accent-accent" :checked="buffer.pasteOnSelectActive"
+            :disabled="!buffer.pasteAvailable || buffer.busy || buffer.loading" @change="changePasteOnSelect" />
           <span>Вставлять выбранную запись в активное окно
-            <span class="mt-1 block text-xs text-muted">При выборе записи кликом или Enter ClipClip скроется и вставит её в предыдущее окно.</span>
+            <span v-if="buffer.pasteAvailable" class="mt-1 block text-xs text-muted">При выборе записи кликом или Enter ClipClip скроется и вставит её в предыдущее окно.</span>
+            <span v-else class="mt-1 block text-xs text-muted">Автоматическая вставка недоступна. При выборе ClipClip скопирует запись в буфер и скроет окно.</span>
           </span>
+        </label>
+        <label class="flex min-h-10 items-start gap-2 border-b border-line pb-3 text-[13px] leading-relaxed">
+          <input id="promote-copied-records" type="checkbox" class="mt-1 accent-accent" :checked="buffer.promoteCopiedRecords"
+            :disabled="buffer.busy || buffer.loading" @change="changePromoteCopiedRecords" />
+          <span>Поднимать скопированные записи в начало истории</span>
         </label>
         <div class="border-b border-line pb-3">
           <label for="time-format" class="block py-1 text-[13px] font-semibold">Формат времени</label>
@@ -172,13 +213,15 @@ onBeforeUnmount(() => {
           <input id="history-limit" v-model.number="limit" type="number" min="1" :max="MAX_HISTORY_LIMIT" step="1" required
             class="min-h-10 w-32 rounded-lg border border-line bg-canvas px-3 text-[13px] tabular-nums outline-accent"
             aria-describedby="history-limit-help history-limit-range" :aria-invalid="!valid" :disabled="buffer.loading"
-            @change="save" @blur="save" @keydown.enter.prevent="save" />
+            @change="save()" @blur="save()" @keydown.enter.prevent="save()" />
           <span id="history-limit-range" class="text-xs text-muted">от 1 до {{ MAX_HISTORY_LIMIT.toLocaleString('ru-RU') }}</span>
         </div>
         <p class="text-xs leading-relaxed text-muted">Лимит действует на обычные записи. Избранные доступны через звёздочку в поиске и сохраняются сверх лимита. Общий объём — до 32 МБ, одна запись — до 8 МБ.</p>
-        <p v-if="valid && Number(limit) < ordinaryCount" class="rounded-lg bg-accent/8 px-3 py-2 text-xs leading-relaxed text-ink" role="status">
-          При применении останутся {{ limit }} самых свежих обычных записей. Более старые записи будут удалены, избранные сохранятся.
-        </p>
+        <div v-if="needsLimitConfirmation" class="rounded-lg bg-accent/8 px-3 py-2 text-xs leading-relaxed text-ink">
+          <p>Будет удалено старых записей: {{ recordsToRemove }}. Избранные сохранятся.</p>
+          <button type="button" class="review-history-limit text-button mt-1" aria-haspopup="dialog" :disabled="buffer.busy || buffer.loading"
+            @click="openLimitConfirmation">Применить лимит…</button>
+        </div>
         <p v-if="!buffer.persistent" class="text-xs leading-relaxed text-muted">Шифрованное хранилище недоступно. Лимит и история действуют только до выхода из приложения.</p>
         <div class="mt-2 border-t border-line pt-3">
           <h3 class="mb-1 text-[13px] font-semibold">Импорт и экспорт</h3>
@@ -200,7 +243,7 @@ onBeforeUnmount(() => {
           <div class="mt-3 space-y-2 text-xs leading-relaxed text-muted">
             <p><strong class="font-medium text-ink">Изображения:</strong> до 8 МБ на одно изображение в сохранённом виде и до 16 мегапикселей. Все записи вместе, включая текст и избранное, занимают не более 32 МБ. Если других записей нет, это примерно 32 изображения по 1 МБ или 4 по 8 МБ. Эти ограничения действуют и при экспорте, и при импорте.</p>
             <p><strong class="font-medium text-ink">Размер JSON:</strong> до 256 МБ. Сам файл может быть больше 32 МБ из-за оформления JSON и служебных сведений; лимит 32 МБ относится к содержимому истории.</p>
-            <p><strong class="font-medium text-ink">Импорт:</strong> записи объединяются без дубликатов. Если в файле превышен лимит объёма или размеров изображения, весь импорт отклоняется без изменения текущей истории. При объединении двух допустимых историй действуют текущий лимит записей и общий объём 32 МБ: старые обычные записи могут быть удалены, а часть импортируемых — не добавлена. Текущие избранные имеют приоритет.</p>
+            <p><strong class="font-medium text-ink">Импорт:</strong> записи объединяются без дубликатов в пределах общего объёма 32 МБ и лимита обычных записей. При переносе настроек применяется лимит из файла. Если какие-либо текущие записи будут удалены, ClipClip покажет их количество и запросит подтверждение. Текущие избранные имеют приоритет.</p>
           </div>
         </div>
         <div class="mt-2 border-t border-line pt-3">
@@ -239,6 +282,20 @@ onBeforeUnmount(() => {
       <button type="button" class="reset-settings-button min-h-10 px-2 text-xs text-muted decoration-dashed underline-offset-4 enabled:hover:underline" aria-haspopup="dialog"
         :disabled="buffer.busy || buffer.loading" @click="resetDialog?.showModal()">Сбросить настройки</button>
     </footer>
+    <dialog ref="limitDialog" class="history-limit-confirm settings-confirm"
+      aria-labelledby="history-limit-title" aria-describedby="history-limit-description"
+      @cancel.stop.prevent="!buffer.busy && closeLimitConfirmation()" @keydown.stop>
+      <h3 id="history-limit-title" class="text-[15px] font-semibold">Применить лимит истории?</h3>
+      <p v-if="limitConfirmation" id="history-limit-description" class="mt-3 text-xs leading-relaxed text-muted" aria-live="polite">
+        Лимит станет {{ limitConfirmation.limit }}. Будут удалены старые обычные записи, максимум {{ limitConfirmation.maxRemoved }}. Избранные сохранятся.
+      </p>
+      <p v-if="buffer.error" role="alert" class="mt-2 text-xs text-danger">{{ buffer.error }}</p>
+      <div class="mt-4 flex justify-end gap-2">
+        <button type="button" class="cancel-history-limit text-button" autofocus :disabled="buffer.busy" @click="closeLimitConfirmation">Отмена</button>
+        <button type="button" class="apply-history-limit primary-button bg-danger/10 text-danger hover:bg-danger/20"
+          :disabled="buffer.busy || !limitConfirmation" @click="applyConfirmedLimit">Применить и удалить</button>
+      </div>
+    </dialog>
     <dialog ref="resetDialog" class="reset-settings-confirm settings-confirm"
       aria-labelledby="reset-settings-title" aria-describedby="reset-settings-description"
       @cancel.stop.prevent="!buffer.busy && resetDialog?.close()" @keydown.stop>

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { ClipboardHistoryItem, FileCheckResult, HistoryState } from '../../shared/clipboard'
 import { HISTORY_LIMIT } from '../../shared/clipboard'
 import type { ColorFormat } from '../../shared/colors'
@@ -13,12 +13,16 @@ export const useBufferStore = defineStore('buffer', () => {
   const paused = ref(false)
   const historyLimit = ref(HISTORY_LIMIT)
   const pasteOnSelect = ref(true)
+  const pasteAvailable = ref(false)
+  const pasteOnSelectActive = computed(() => pasteAvailable.value && pasteOnSelect.value)
+  const promoteCopiedRecords = ref(true)
   const timeFormat = ref<TimeFormat>(DEFAULT_TIME_FORMAT)
   const shortcuts = ref<ShortcutSettings>({ ...DEFAULT_SHORTCUTS })
   const persistent = ref(false)
   const shortcutAvailable = ref(true)
   const canUndo = ref(false)
   const error = ref<string | null>(null)
+  const pasteWarning = ref(false)
   const busy = ref(false)
   let revision = -1
   let unsubscribe: (() => void) | undefined
@@ -32,12 +36,15 @@ export const useBufferStore = defineStore('buffer', () => {
     paused.value = state.paused
     historyLimit.value = state.historyLimit
     pasteOnSelect.value = state.pasteOnSelect
+    pasteAvailable.value = state.pasteAvailable
+    promoteCopiedRecords.value = state.promoteCopiedRecords
     timeFormat.value = state.timeFormat
     shortcuts.value = state.shortcuts
     persistent.value = state.persistent
     shortcutAvailable.value = state.shortcutAvailable
     canUndo.value = state.canUndo
     error.value = state.error
+    pasteWarning.value = false
     loading.value = false
   }
 
@@ -69,13 +76,18 @@ export const useBufferStore = defineStore('buffer', () => {
     revision = -1
   }
 
-  async function action(operation: () => Promise<void | string>, failure: string): Promise<boolean> {
+  async function action(operation: () => Promise<void | string | { pasteWarning: string }>, failure: string): Promise<boolean> {
     if (busy.value) return false
     busy.value = true
     error.value = null
+    pasteWarning.value = false
     try {
       const message = await operation()
-      if (message) { error.value = message; return false }
+      if (message) {
+        pasteWarning.value = typeof message !== 'string'
+        error.value = typeof message === 'string' ? message : message.pasteWarning
+        return false
+      }
       return true
     }
     catch { error.value = failure; return false }
@@ -85,7 +97,7 @@ export const useBufferStore = defineStore('buffer', () => {
   const copy = (id: string, onFileCheck?: (id: string, result: FileCheckResult) => void, activate = false) => action(
     async () => {
       const result = await (activate ? window.electronAPI!.activateItem(id) : window.electronAPI!.copyItem(id))
-      if (result && result.status === 'paste-unavailable') return result.message
+      if (result && result.status === 'paste-unavailable') return result.canPasteManually ? { pasteWarning: result.message } : result.message
       if (clipboardHistory.value.some(item => item.id === id && item.fileUris)) {
         onFileCheck?.(id, result ?? { status: 'available', message: 'Все файлы и папки доступны.' })
       }
@@ -114,11 +126,15 @@ export const useBufferStore = defineStore('buffer', () => {
     () => window.electronAPI!.setPaused(value), 'Не удалось изменить состояние записи.',
   )
   const hide = () => action(() => window.electronAPI!.hideWindow(), 'Не удалось скрыть окно.')
-  const setHistoryLimit = (value: number) => action(
-    () => window.electronAPI!.setHistoryLimit(value), 'Не удалось изменить лимит истории.',
+  const setHistoryLimit = (value: number, maxRemoved?: number) => action(
+    () => maxRemoved === undefined ? window.electronAPI!.setHistoryLimit(value) : window.electronAPI!.setHistoryLimit(value, maxRemoved),
+    'Не удалось изменить лимит истории.',
   )
   const setPasteOnSelect = (value: boolean) => action(
     () => window.electronAPI!.setPasteOnSelect(value), 'Не удалось изменить настройку вставки.',
+  )
+  const setPromoteCopiedRecords = (value: boolean) => action(
+    () => window.electronAPI!.setPromoteCopiedRecords(value), 'Не удалось изменить настройку порядка записей.',
   )
   const setTimeFormat = (value: TimeFormat) => action(
     () => window.electronAPI!.setTimeFormat(value), 'Не удалось изменить формат времени.',
@@ -141,11 +157,11 @@ export const useBufferStore = defineStore('buffer', () => {
   const setShortcuts = (value: ShortcutSettings) => action(
     () => window.electronAPI!.setShortcuts(value), 'Не удалось применить горячие клавиши. Сочетание вызова окна может быть занято другой программой.',
   )
-  const saveRevision = (id: string, text: string) => window.electronAPI!.saveTextRevision(id, text)
+  const saveRevision = (id: string | null, text: string) => window.electronAPI!.saveTextRevision(id, text)
   const setFullscreen = (value: boolean) => action(
     () => window.electronAPI!.setPreviewFullscreen(value), 'Не удалось переключить полноэкранный режим.',
   )
 
-  return { clipboardHistory, loading, paused, historyLimit, pasteOnSelect, timeFormat, shortcuts, persistent, shortcutAvailable, canUndo, error,
-    busy, connect, disconnect, copy, copyColor, revealFile, copyFilePath, remove, undo, setPaused, setHistoryLimit, setPasteOnSelect, setTimeFormat, resetSettings, setPinned, clearHistory, transferHistory, setShortcuts, hide, saveRevision, setFullscreen }
+  return { clipboardHistory, loading, paused, historyLimit, pasteOnSelect, pasteAvailable, pasteOnSelectActive, promoteCopiedRecords, timeFormat, shortcuts, persistent, shortcutAvailable, canUndo, error, pasteWarning,
+    busy, connect, disconnect, copy, copyColor, revealFile, copyFilePath, remove, undo, setPaused, setHistoryLimit, setPasteOnSelect, setPromoteCopiedRecords, setTimeFormat, resetSettings, setPinned, clearHistory, transferHistory, setShortcuts, hide, saveRevision, setFullscreen }
 })

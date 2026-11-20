@@ -22,7 +22,7 @@ describe('clipboard history', () => {
       ...original, id: 'reset-' + index, data: 'fixture ' + index, pinned: index === 0,
     }))
     history.hydrate(records, true, 250)
-    history.resetSettings()
+    history.resetSettings(await history.prepareResume())
     expect(history.paused).toBe(false)
     expect(history.historyLimit).toBe(250)
     expect(history.items.map(item => item.id)).toEqual(records.map(item => item.id))
@@ -42,7 +42,7 @@ describe('clipboard history', () => {
     const reads = read.mock.calls.length
     const incoming = [{ ...original, id: 'duplicate', pinned: true },
       { ...original, data: 'new', createdAt: 20 }, { ...original, id: 'repeated', data: 'new' }]
-    expect(history.importItems(incoming)).toEqual({ imported: 1, duplicates: 2, skipped: 0, removed: 0 })
+    expect(history.commitImport(history.planImport(incoming))).toEqual({ imported: 1, duplicates: 2, skipped: 0, removed: 0 })
     expect(history.items).toHaveLength(2)
     expect(history.items.find(item => item.data === 'hello')).toMatchObject({ id: original.id, pinned: true })
     expect(history.items.find(item => item.data === 'new')!.id).not.toBe(original.id)
@@ -51,7 +51,7 @@ describe('clipboard history', () => {
     expect(read.mock.calls).toHaveLength(reads)
     await history.capture()
     expect(history.items).toHaveLength(2)
-    expect(history.importItems(incoming)).toEqual({ imported: 0, duplicates: 3, skipped: 0, removed: 0 })
+    expect(history.commitImport(history.planImport(incoming))).toEqual({ imported: 0, duplicates: 3, skipped: 0, removed: 0 })
   })
   it('uses selected import settings and reports records omitted by count and byte budgets', async () => {
     const { history } = setup(); await history.capture()
@@ -59,16 +59,41 @@ describe('clipboard history', () => {
     history.setPinned(original.id, true)
     history.setHistoryLimit(1)
     const incoming = Array.from({ length: 3 }, (_, index) => ({ ...original, id: String(index), data: String(index), pinned: false, createdAt: index }))
-    expect(history.importItems(incoming)).toEqual({ imported: 1, duplicates: 0, skipped: 2, removed: 0 })
+    expect(history.commitImport(history.planImport(incoming))).toEqual({ imported: 1, duplicates: 0, skipped: 2, removed: 0 })
     expect(history.historyLimit).toBe(1)
-    history.importItems(incoming, { historyLimit: 3, paused: true })
+    history.commitImport(history.planImport(incoming, { historyLimit: 3, paused: true }))
     expect(history.items).toHaveLength(4)
     expect(history.paused).toBe(true)
     expect(history.historyLimit).toBe(3)
     history.hydrate(Array.from({ length: 4 }, (_, index) => ({ ...original, id: 'existing' + index, data: 'x'.repeat(MAX_ITEM_BYTES), pinned: true })))
-    const result = history.importItems([{ ...original, id: 'incoming', data: 'new favorite', pinned: true, createdAt: Date.now() }])
+    const plan = history.planImport([{ ...original, id: 'incoming', data: 'new favorite', pinned: true, createdAt: Date.now() }])
+    const result = history.commitImport(plan)
     expect(result).toMatchObject({ imported: 0, skipped: 1, removed: 0 })
     expect(history.items.every(item => item.id.startsWith('existing'))).toBe(true)
+  })
+  it('previews exactly which current records a smaller imported limit would evict', async () => {
+    const { history } = setup()
+    await history.capture()
+    const initial = history.items[0]
+    const items = [
+      { ...initial, id: 'recent', data: 'recent', createdAt: 2 },
+      { ...initial, id: 'older', data: 'older', createdAt: 1 },
+      { ...initial, id: 'favorite', data: 'favorite', createdAt: 0, pinned: true },
+    ]
+    history.hydrate(items)
+    const notify = vi.fn(); history.subscribe(notify)
+    const plan = history.planImport([], { historyLimit: 1, paused: true })
+    expect(plan.removedIds).toEqual(['older'])
+    expect(plan.result).toEqual({ imported: 0, duplicates: 0, skipped: 0, removed: 1 })
+    expect(history.items.map(item => item.id)).toEqual(['recent', 'older', 'favorite'])
+    expect(history.historyLimit).toBe(HISTORY_LIMIT)
+    expect(history.paused).toBe(false)
+    expect(notify).not.toHaveBeenCalled()
+    history.commitImport(plan)
+    expect(history.items.map(item => item.id)).toEqual(['recent', 'favorite'])
+    expect(history.historyLimit).toBe(1)
+    expect(history.paused).toBe(true)
+    expect(notify).toHaveBeenCalledOnce()
   })
   it('discards captures already in flight when importing', async () => {
     let resolve!: (value: { name: string; title: string }) => void
@@ -76,7 +101,7 @@ describe('clipboard history', () => {
     active.push(slow)
     const { history } = setup(); await history.capture()
     const pending = slow.capture(); await Promise.resolve()
-    slow.importItems(history.items)
+    slow.commitImport(slow.planImport(history.items))
     resolve({ name: 'fixture', title: '' }); await pending
     expect(slow.items.map(item => item.data)).toEqual(['hello'])
   })
@@ -118,7 +143,7 @@ describe('clipboard history', () => {
     expect(history.canUndo).toBe(false)
     expect(history.paused).toBe(true)
     expect(history.historyLimit).toBe(250)
-    history.undoDelete(); history.setPaused(false); await history.capture()
+    history.undoDelete(); await history.setPaused(false); await history.capture()
     expect(history.items).toEqual([])
     setSnapshot({ text: 'after clear', image: null }); await history.capture()
     expect(history.items[0].data).toBe('after clear')
@@ -131,6 +156,34 @@ describe('clipboard history', () => {
     await slow.clear()
     resolve({ name: 'fixture', title: '' }); await pending; await slow.capture()
     expect(slow.items).toEqual([])
+  })
+  it('keeps cleared clipboard contents out of history after a restart', async () => {
+    const snapshot = { text: 'cleared text', image }
+    const { history } = setup(snapshot)
+    await history.capture()
+    await history.clear()
+
+    const restored = setup(snapshot)
+    restored.history.hydrate(history.items, history.paused, history.historyLimit, history.clipboardClearBaseline)
+    await restored.history.capture()
+    expect(restored.history.items).toEqual([])
+
+    restored.setSnapshot({ text: 'new copy', image })
+    await restored.history.capture()
+    expect(restored.history.items.map(item => item.data)).toEqual(['new copy'])
+  })
+  it('uses the next readable snapshot only as a baseline after a failed clear read', async () => {
+    const { history, read } = setup()
+    await history.capture()
+    read.mockRejectedValueOnce(new Error('clipboard busy'))
+    await history.clear()
+    expect(history.clipboardClearBaseline).toBe('next-capture')
+
+    const restored = setup()
+    restored.history.hydrate(history.items, history.paused, history.historyLimit, history.clipboardClearBaseline)
+    await restored.history.capture()
+    expect(restored.history.items).toEqual([])
+    expect(restored.history.clipboardClearBaseline).toMatchObject({ text: expect.any(String) })
   })
   it('defaults to 100, applies a new cap immediately and uses it for captures, edits and undo', async () => {
     const { history, setSnapshot } = setup()
@@ -149,8 +202,8 @@ describe('clipboard history', () => {
     expect(notify).toHaveBeenCalledOnce()
     history.delete(history.items[1].id)
     setSnapshot({ text: 'latest', image: null }); await history.capture()
-    history.undoDelete()
-    expect(history.items).toHaveLength(2)
+    expect(() => history.undoDelete()).toThrow('Недостаточно места')
+    expect(history.items.map(item => item.data)).toEqual(['latest', 'entry 104'])
     history.saveTextRevision(history.items[0].id, 'edited')
     expect(history.items).toHaveLength(2)
     history.setHistoryLimit(4)
@@ -209,13 +262,12 @@ describe('clipboard history', () => {
     history.hydrate([{ ...original, type: 'text', params: { ...original.params, type: 'text', tags: [{ code: 'type', value: 'Текст' }] } }])
     expect(history.items[0].params.tags).toContainEqual({ code: 'type', value: 'Цвет' })
   })
-  it('labels folders and files, persists their kinds and upgrades legacy unknown objects', async () => {
+  it('captures file references without probing them and preserves explicitly verified kinds', async () => {
     const history = new ClipboardHistory({ read: () => ({ text: '', image: null, fileUris: ['file:///C:/folder', 'file:///C:/archive.zip'] }),
-      source, fileKinds: async () => ['folder', 'file'] })
+      source })
     active.push(history)
     await history.capture()
-    expect(history.items[0].fileKinds).toEqual(['folder', 'file'])
-    expect(history.items[0].params.size).toBe('1 файл, 1 папка')
+    expect(history.items[0].fileKinds).toEqual(['unknown', 'unknown'])
     const record = history.items[0]
     history.hydrate([{ ...record, fileKinds: undefined }])
     history.updateFileKinds(record.id, ['folder', 'file'])
@@ -375,6 +427,32 @@ describe('clipboard history', () => {
     expect(() => history.saveTextRevision(id, 'x'.repeat(MAX_ITEM_BYTES + 1))).toThrow()
     expect(history.items[0].data).toBe('edit ' + (HISTORY_LIMIT + 9))
   })
+  it('rejects a revision that cannot fit without altering the saved history', async () => {
+    const { history } = setup()
+    await history.capture()
+    const original = history.items[0]
+    history.hydrate(Array.from({ length: 4 }, (_, index) => ({
+      ...original, id: String(index), pinned: true, data: String(index).repeat(MAX_ITEM_BYTES),
+    })))
+    const before = history.items
+    const listener = vi.fn()
+    history.subscribe(listener)
+    expect(() => history.saveTextRevision(before[0].id, 'unsaved draft')).toThrow('Недостаточно места')
+    expect(history.items).toBe(before)
+    expect(listener).not.toHaveBeenCalled()
+  })
+  it('saves an evicted draft as a new record only when explicitly requested', async () => {
+    const { history, setSnapshot } = setup()
+    history.setHistoryLimit(1)
+    await history.capture()
+    const original = history.items[0]
+    setSnapshot({ text: 'other copy', image: null })
+    await history.capture()
+    expect(() => history.saveTextRevision(original.id, 'draft')).toThrow('Исходная запись уже удалена')
+    const recovered = history.saveTextRevision(null, 'draft')
+    expect(history.items).toEqual([recovered])
+    expect(recovered.data).toBe('draft')
+  })
   it('captures text and image once for an unchanged snapshot', async () => {
     const { history } = setup({ text: 'hello', image })
     for (let index = 0; index < 5; index++) await history.capture()
@@ -436,6 +514,33 @@ describe('clipboard history', () => {
     await history.capture()
     expect(history.items[0].data).toBe('hello')
   })
+  it('promotes an older copied item once, preserving its ID and favorite metadata', async () => {
+    vi.useFakeTimers()
+    const { history, setSnapshot } = setup()
+    vi.setSystemTime(1000)
+    await history.capture()
+    const originalId = history.items[0].id
+    history.setPinned(originalId, true)
+    const original = history.items[0]
+    vi.setSystemTime(2000)
+    setSnapshot({ text: 'more recent item', image: null })
+    await history.capture()
+    expect(history.items[0].id).not.toBe(originalId)
+
+    vi.setSystemTime(3000)
+    const notify = vi.fn()
+    history.subscribe(notify)
+    history.promoteCopiedItem(originalId)
+    expect(history.items).toHaveLength(2)
+    expect(history.items[0]).toEqual({ ...original, createdAt: 3000 })
+    expect(notify).toHaveBeenCalledTimes(1)
+
+    vi.setSystemTime(4000)
+    history.promoteCopiedItem(originalId)
+    history.promoteCopiedItem('deleted-id')
+    expect(history.items[0].createdAt).toBe(3000)
+    expect(notify).toHaveBeenCalledTimes(1)
+  })
   it('pauses even when a source lookup is already pending', async () => {
     let resolve!: (value: { name: string; title: string }) => void
     const history = new ClipboardHistory({ read: () => ({ text: 'hello', image: null }),
@@ -447,6 +552,125 @@ describe('clipboard history', () => {
     resolve({ name: 'fixture', title: '' })
     await pending
     expect(history.items).toHaveLength(0)
+  })
+  it('uses the clipboard at resume as a baseline before accepting later copies', async () => {
+    const { history, setSnapshot } = setup()
+    await history.capture()
+    await history.setPaused(true)
+    setSnapshot({ text: 'copied during pause', image })
+    await history.setPaused(false)
+    await history.capture()
+    expect(history.items.map(item => item.data)).toEqual(['hello'])
+    setSnapshot({ text: 'copied after resume', image })
+    await history.capture()
+    expect(history.items.map(item => item.data)).toEqual(['copied after resume', 'hello'])
+  })
+  it('records the first newer Windows clipboard version after resuming from a busy buffer', async () => {
+    let sequence = 1
+    const read = vi.fn<() => ClipboardSnapshot | undefined>().mockReturnValue({ text: 'recorded before pause', image: null })
+    const history = new ClipboardHistory({ sequence: () => sequence, read, source })
+    active.push(history)
+    await history.capture()
+    await history.setPaused(true)
+    sequence++
+    read.mockReturnValue(undefined)
+    await history.setPaused(false)
+    expect(history.paused).toBe(false)
+    await history.capture()
+    expect(history.clipboardClearBaseline).toBe('next-capture')
+
+    sequence++
+    read.mockReturnValue({ text: 'first copy after resume', image: null })
+    await history.capture()
+    expect(history.items.map(item => item.data)).toEqual(['first copy after resume', 'recorded before pause'])
+  })
+  it('takes the Windows resume boundary without waiting for an older capture to finish', async () => {
+    let sequence = 1
+    let snapshot: ClipboardSnapshot = { text: 'pending before pause', image: null }
+    let finish!: (value: { name: string; title: string }) => void
+    const attribution = vi.fn(source).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const history = new ClipboardHistory({ sequence: () => sequence, read: () => snapshot, source: attribution })
+    active.push(history)
+    const pending = history.capture()
+    await Promise.resolve()
+    await history.setPaused(true)
+    sequence++
+    snapshot = { text: 'copied during pause', image: null }
+    await history.setPaused(false)
+    sequence++
+    snapshot = { text: 'first copy after resume', image: null }
+    finish({ name: 'Fixture', title: '' })
+    await pending
+    await history.capture()
+    expect(history.items.map(item => item.data)).toEqual(['first copy after resume'])
+  })
+  it('suppresses the exact Windows version present at resume when it becomes readable', async () => {
+    let sequence = 1
+    const read = vi.fn<() => ClipboardSnapshot | undefined>().mockReturnValue({ text: 'copied during pause', image: null })
+    const history = new ClipboardHistory({ sequence: () => sequence, read, source })
+    active.push(history)
+    await history.setPaused(true)
+    await history.setPaused(false)
+    await history.capture()
+    expect(history.items).toEqual([])
+    sequence++
+    read.mockReturnValue({ text: 'copied after pause', image: null })
+    await history.capture()
+    expect(history.items.map(item => item.data)).toEqual(['copied after pause'])
+  })
+  it('remains paused when no version or usable baseline can be read, then resumes on retry', async () => {
+    const read = vi.fn<() => ClipboardSnapshot | undefined | Promise<ClipboardSnapshot | undefined>>()
+    const history = new ClipboardHistory({ read, source })
+    active.push(history)
+    await history.setPaused(true)
+    let finish!: (value: undefined) => void
+    read.mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    const pending = history.setPaused(false)
+    expect(history.paused).toBe(true)
+    finish(undefined)
+    await expect(pending).rejects.toThrow('Запись остаётся на паузе')
+    expect(history.paused).toBe(true)
+    read.mockReturnValue({ text: 'copied during pause', image: null })
+    await history.setPaused(false)
+    expect(history.paused).toBe(false)
+    expect(history.error).toBeNull()
+    await history.capture()
+    expect(history.items).toEqual([])
+    read.mockReturnValue({ text: 'first copy after resume', image: null })
+    await history.capture()
+    expect(history.items.map(item => item.data)).toEqual(['first copy after resume'])
+  })
+  it('establishes the Windows baseline when imported settings actually resume capture', async () => {
+    let sequence = 1
+    const read = vi.fn<() => ClipboardSnapshot>().mockReturnValue({ text: 'first paused copy', image: null })
+    const history = new ClipboardHistory({ sequence: () => sequence, read, source })
+    active.push(history)
+    await history.setPaused(true)
+    const plan = history.planImport([], { historyLimit: HISTORY_LIMIT, paused: false })
+    const prepare = await history.prepareResume()
+    sequence++
+    read.mockReturnValue({ text: 'copied during import while paused', image: null })
+    history.commitImport(plan, prepare)
+    await history.capture()
+    expect(history.items).toEqual([])
+    sequence++
+    read.mockReturnValue({ text: 'first copy after import', image: null })
+    await history.capture()
+    expect(history.items.map(item => item.data)).toEqual(['first copy after import'])
+  })
+  it('retains the first different Windows clipboard version after a busy clear', async () => {
+    let sequence = 1
+    const read = vi.fn<() => ClipboardSnapshot | undefined>().mockReturnValue({ text: 'original', image: null })
+    const history = new ClipboardHistory({ sequence: () => sequence, read, source })
+    active.push(history)
+    await history.capture()
+    read.mockReturnValue(undefined)
+    await history.clear()
+    expect(history.items).toEqual([])
+    sequence++
+    read.mockReturnValue({ text: 'first copy after clear', image: null })
+    await history.capture()
+    expect(history.items.map(item => item.data)).toEqual(['first copy after clear'])
   })
   it('removes data from history and allows one bounded undo', async () => {
     vi.useFakeTimers()
@@ -463,6 +687,64 @@ describe('clipboard history', () => {
     history.undoDelete()
     expect(history.items).toEqual([])
     expect(history.canUndo).toBe(false)
+  })
+  it('restores in time order so future captures evict the oldest record', async () => {
+    vi.useFakeTimers()
+    const { history, setSnapshot } = setup()
+    history.setHistoryLimit(2)
+    vi.setSystemTime(1000)
+    await history.capture()
+    history.delete(history.items[0].id)
+
+    vi.setSystemTime(2000)
+    setSnapshot({ text: 'newer', image: null })
+    await history.capture()
+    history.undoDelete()
+    expect(history.items.map(item => item.data)).toEqual(['newer', 'hello'])
+
+    vi.setSystemTime(3000)
+    setSnapshot({ text: 'latest', image: null })
+    await history.capture()
+    expect(history.items.map(item => item.data)).toEqual(['latest', 'newer'])
+  })
+  it('merges a recopied record into its current identity and restores its favorite flag', async () => {
+    vi.useFakeTimers()
+    const { history, setSnapshot } = setup()
+    vi.setSystemTime(1000)
+    await history.capture()
+    const originalId = history.items[0].id
+    history.setPinned(originalId, true)
+    history.delete(originalId)
+
+    vi.setSystemTime(2000)
+    setSnapshot({ text: 'between copies', image: null })
+    await history.capture()
+    vi.setSystemTime(3000)
+    setSnapshot({ text: 'hello', image: null })
+    await history.capture()
+    const current = history.items[0]
+    expect(current.id).not.toBe(originalId)
+    history.undoDelete()
+    expect(history.items.map(item => item.data)).toEqual(['hello', 'between copies'])
+    expect(history.items[0]).toMatchObject({ id: current.id, createdAt: 3000, pinned: true })
+    expect(history.canUndo).toBe(false)
+  })
+  it('keeps newer history and the undo action when the deleted record no longer fits', async () => {
+    vi.useFakeTimers()
+    const { history, setSnapshot } = setup()
+    history.setHistoryLimit(1)
+    vi.setSystemTime(1000)
+    await history.capture()
+    history.delete(history.items[0].id)
+    vi.setSystemTime(2000)
+    setSnapshot({ text: 'newer', image: null })
+    await history.capture()
+    expect(() => history.undoDelete()).toThrow('Недостаточно места')
+    expect(history.items.map(item => item.data)).toEqual(['newer'])
+    expect(history.canUndo).toBe(true)
+    history.setHistoryLimit(2)
+    history.undoDelete()
+    expect(history.items.map(item => item.data)).toEqual(['newer', 'hello'])
   })
   it('bounds oversized text without blocking subsequent captures', async () => {
     const { history, setSnapshot } = setup({ text: 'x'.repeat(MAX_ITEM_BYTES + 1), image: null })

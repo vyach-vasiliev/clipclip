@@ -1,84 +1,34 @@
-import { ref, watch, onMounted, onBeforeUnmount, type Ref } from 'vue'
+import { computed, ref, watch, type Ref } from 'vue'
 import type { ClipboardHistoryItem, FileCheckResult } from '../../shared/clipboard'
 
-interface FileState {
-  status: FileCheckResult['status'] | 'checking'
-  message: string
-  checkedAt: number
-}
-const CACHE_MS = 5000
-
-export function useFileAvailability(items: Ref<ClipboardHistoryItem[]>, list: Ref<HTMLElement | undefined>) {
-  const states = ref<Record<string, FileState>>({})
-  const visible = new Set<string>()
-  const queued = new Set<string>()
-  const versions = new Map<string, number>()
-  let observer: IntersectionObserver | undefined
-  let running = false
-  let disposed = false
-
-  function update(id: string, result: FileCheckResult) {
-    if (!disposed) {
-      versions.set(id, (versions.get(id) ?? 0) + 1)
-      states.value[id] = { ...result, checkedAt: Date.now() }
+export function useFileAvailability(items: Ref<ClipboardHistoryItem[]>) {
+  const checks = ref<Record<string, { list?: FileCheckResult; paths: Record<number, FileCheckResult> }>>(Object.create(null))
+  const states = computed(() => {
+    const failures: Record<string, FileCheckResult> = Object.create(null)
+    for (const [id, result] of Object.entries(checks.value)) {
+      const failure = result.list ?? Object.values(result.paths)[0]
+      if (failure) failures[id] = failure
     }
-  }
-
-  async function drain() {
-    if (running || disposed) return
-    running = true
-    try {
-      for (const id of queued) {
-        queued.delete(id)
-        const item = items.value.find(item => item.id === id && item.fileUris)
-        if (!visible.has(id) || !item || !window.electronAPI) continue
-        const cached = states.value[id]
-        if (cached && Date.now() - cached.checkedAt < CACHE_MS) continue
-        const version = versions.get(id) ?? 0
-        if (!cached) states.value[id] = { status: 'checking', message: 'Проверка файлов…', checkedAt: 0 }
-        let result: FileCheckResult
-        try { result = await window.electronAPI.checkFiles(id) }
-        catch { result = { status: 'unavailable', message: 'Не удалось проверить файлы и папки.' } }
-        if (disposed) break
-        if (items.value.some(current => current.id === id && current.fileUris)) {
-          // A manual copy may have performed a newer check while this one ran.
-          if ((versions.get(id) ?? 0) === version) update(id, result)
-        } else delete states.value[id]
-      }
-    } finally { running = false }
-  }
-
-  function refresh() {
-    visible.forEach(id => queued.add(id))
-    void drain()
-  }
-
-  function observe() {
-    observer?.disconnect()
-    visible.clear()
-    queued.clear()
-    const ids = new Set(items.value.filter(item => item.fileUris).map(item => item.id))
-    Object.keys(states.value).forEach(id => { if (!ids.has(id)) delete states.value[id] })
-    for (const id of versions.keys()) { if (!ids.has(id)) versions.delete(id) }
-    if (!list.value || typeof IntersectionObserver === 'undefined') return
-    observer = new IntersectionObserver(entries => {
-      for (const entry of entries) {
-        const id = (entry.target as HTMLElement).dataset.fileId!
-        if (entry.isIntersecting) { visible.add(id); queued.add(id) }
-        else { visible.delete(id); queued.delete(id) }
-      }
-      void drain()
-    }, { root: list.value })
-    list.value.querySelectorAll<HTMLElement>('[data-file-id]').forEach(element => observer!.observe(element))
-  }
-
-  watch([items, list], observe, { flush: 'post' })
-  onMounted(() => { observe(); window.addEventListener('focus', refresh) })
-  onBeforeUnmount(() => {
-    disposed = true
-    queued.clear()
-    observer?.disconnect()
-    window.removeEventListener('focus', refresh)
+    return failures
   })
-  return { states, refresh, update }
+
+  function update(id: string, result: FileCheckResult, index?: number) {
+    if (!items.value.some(item => item.id === id && item.fileUris)) return
+    if (index === undefined) {
+      if (result.status === 'available') delete checks.value[id]
+      else checks.value[id] = { list: result, paths: {} }
+      return
+    }
+    if (result.status !== 'available') (checks.value[id] ??= { paths: {} }).paths[index] = result
+    else if (checks.value[id]) delete checks.value[id].paths[index]
+  }
+
+  watch(items, current => {
+    const ids = new Set(current.filter(item => item.fileUris).map(item => item.id))
+    for (const id of Object.keys(checks.value)) {
+      if (!ids.has(id)) delete checks.value[id]
+    }
+  })
+
+  return { states, update }
 }

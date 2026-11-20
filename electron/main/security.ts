@@ -28,10 +28,10 @@ export function requireId(value: unknown): string {
   return value
 }
 
-export function requireTextRevision(value: unknown): { id: string; text: string } {
+export function requireTextRevision(value: unknown): { id: string | null; text: string } {
   if (!value || typeof value !== 'object') throw new Error('Некорректная версия текста.')
   const revision = value as { id?: unknown; text?: unknown }
-  const id = requireId(revision.id)
+  const id = revision.id === null ? null : requireId(revision.id)
   if (typeof revision.text !== 'string' || Buffer.byteLength(revision.text, 'utf8') > MAX_ITEM_BYTES) {
     throw new Error('Текст должен быть не больше 8 МБ.')
   }

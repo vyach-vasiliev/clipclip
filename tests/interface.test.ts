@@ -5,7 +5,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import Second from '../src/components/Second.vue'
 import { useBufferStore } from '../src/store/buffer'
 import { adjacentId, filterHistory, highlightParts, historyTags } from '../src/utils/history'
-import type { ClipboardHistoryItem, ElectronAPI, HistoryState } from '../shared/clipboard'
+import type { ClipboardHistoryItem, ElectronAPI, HistoryState, QuickPickAction } from '../shared/clipboard'
 import { convertColor } from '../shared/colors'
 import { filePathLabel } from '../shared/files'
 import { DEFAULT_SHORTCUTS } from '../shared/shortcuts'
@@ -13,20 +13,24 @@ import { DEFAULT_SHORTCUTS } from '../shared/shortcuts'
 const wrappers: VueWrapper[] = []
 let emitState: (state: HistoryState) => void
 let emitShown: () => void
-let intersect: IntersectionObserverCallback
+let emitQuickPickChanged: (active: boolean) => void
+let emitQuickPickAction: (action: QuickPickAction) => void
 const item = (id: string, data = 'fixture [ bracket.\nsecond line'): ClipboardHistoryItem => ({
   id, type: 'text', data, createdAt: 1,
   params: { size: '20 симв.', type: 'text', source: { name: 'Fixture: app', title: '' },
     tags: [{ code: 'source', value: 'Fixture: app' }, { code: 'type', value: 'Текст' }] },
 })
 const state = (items = [item('first')], revision = 1): HistoryState => ({
-  revision, items, historyLimit: 100, pasteOnSelect: true, timeFormat: '24h', shortcuts: { ...DEFAULT_SHORTCUTS }, paused: false, persistent: true, canUndo: false, shortcutAvailable: true, error: null,
+  revision, items, historyLimit: 100, pasteOnSelect: true, pasteAvailable: true, promoteCopiedRecords: true, timeFormat: '24h', shortcuts: { ...DEFAULT_SHORTCUTS }, paused: false, persistent: true, canUndo: false, shortcutAvailable: true, error: null,
 })
 async function setup(items?: ClipboardHistoryItem[]) {
   const api: ElectronAPI = {
     getHistory: vi.fn(async () => state(items)),
     onHistoryChanged: vi.fn(callback => { emitState = callback; return vi.fn() }),
     onWindowShown: vi.fn(callback => { emitShown = callback; return vi.fn() }),
+    onQuickPickChanged: vi.fn(callback => { emitQuickPickChanged = callback; return vi.fn() }),
+    onQuickPickAction: vi.fn(callback => { emitQuickPickAction = callback; return vi.fn() }),
+    openFullWindow: vi.fn(async () => { emitQuickPickChanged(false) }),
     activateItem: vi.fn(async () => {}),
     copyItem: vi.fn(async () => {}),
     copyColor: vi.fn(async (id, format) => {
@@ -46,7 +50,7 @@ async function setup(items?: ClipboardHistoryItem[]) {
       return copied
     }),
     deleteItem: vi.fn(async () => {}), undoDelete: vi.fn(async () => {}),
-    checkFiles: vi.fn(async () => ({ status: 'available' as const, message: 'Все файлы и папки доступны.' })),
+    checkFile: vi.fn(async () => ({ status: 'available' as const, message: 'Выбранный путь доступен.' })),
     saveTextRevision: vi.fn(async (_id, text) => item('edited', text)),
     setPinned: vi.fn(async (id, pinned) => { emitState(state((items ?? [item('first')]).map(record => record.id === id ? { ...record, pinned } : record), 2)) }),
     clearHistory: vi.fn(async () => { emitState(state([], 2)) }),
@@ -56,6 +60,7 @@ async function setup(items?: ClipboardHistoryItem[]) {
     setShortcutCapture: vi.fn(async () => {}),
     setHistoryLimit: vi.fn(async limit => { emitState({ ...state(items, 2), historyLimit: limit }) }),
     setPasteOnSelect: vi.fn(async pasteOnSelect => { emitState({ ...state(items, 2), pasteOnSelect }) }),
+    setPromoteCopiedRecords: vi.fn(async promoteCopiedRecords => { emitState({ ...state(items, 2), promoteCopiedRecords }) }),
     setTimeFormat: vi.fn(async timeFormat => { emitState({ ...state(items, 2), timeFormat }) }),
     resetSettings: vi.fn(async () => { emitState(state(items, 3)) }),
     setPaused: vi.fn(async () => {}), hideWindow: vi.fn(async () => {}),
@@ -72,10 +77,6 @@ async function setup(items?: ClipboardHistoryItem[]) {
   return { wrapper, api, buffer }
 }
 beforeEach(() => {
-  vi.stubGlobal('IntersectionObserver', class {
-    constructor(callback: IntersectionObserverCallback) { intersect = callback }
-    observe() {} disconnect() {}
-  })
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
   vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addEventListener() {}, removeEventListener() {} })))
   HTMLElement.prototype.scrollIntoView = vi.fn()
@@ -84,6 +85,39 @@ beforeEach(() => {
   HTMLDialogElement.prototype.showModal = vi.fn()
 })
 afterEach(() => { wrappers.splice(0).forEach(wrapper => wrapper.unmount()); document.body.innerHTML = ''; delete window.electronAPI; vi.useRealTimers(); vi.unstubAllGlobals() })
+
+describe('quick selection in the full window', () => {
+  it('keeps the regular controls visible and selects by arrow and Enter without focusing a row', async () => {
+    const { wrapper, api } = await setup([item('first'), item('second')])
+    emitQuickPickChanged(true)
+    emitShown()
+    await flushPromises()
+    expect(wrapper.find('.quick-pick #history-search').exists()).toBe(true)
+    expect(wrapper.find('.quick-pick .settings-button').exists()).toBe(true)
+    emitQuickPickAction('next')
+    await flushPromises()
+    const second = wrapper.get('#record-second')
+    expect(second.attributes('aria-pressed')).toBe('true')
+    expect(document.activeElement).not.toBe(second.element)
+    emitQuickPickAction('select')
+    await flushPromises()
+    expect(api.activateItem).toHaveBeenCalledExactlyOnceWith('second')
+    expect(api.openFullWindow).not.toHaveBeenCalled()
+  })
+
+  it('activates the window when the user clicks search', async () => {
+    const { wrapper, api } = await setup()
+    emitQuickPickChanged(true)
+    emitShown()
+    await flushPromises()
+    const search = wrapper.get('#history-search')
+    await search.trigger('click')
+    await flushPromises()
+    expect(api.openFullWindow).toHaveBeenCalledOnce()
+    expect(wrapper.find('.quick-pick').exists()).toBe(false)
+    expect(document.activeElement).toBe(search.element)
+  })
+})
 
 describe('date and time search', () => {
   const records = () => [
@@ -286,6 +320,21 @@ describe('date and time search', () => {
 })
 
 describe('settings', () => {
+  it('applies history promotion immediately and restores the setting when the dialog reopens', async () => {
+    const { wrapper, api } = await setup()
+    await wrapper.get('.settings-button').trigger('click')
+    await vi.dynamicImportSettled()
+    const checkbox = wrapper.get<HTMLInputElement>('#promote-copied-records')
+    expect(checkbox.element.checked).toBe(true)
+    await checkbox.setValue(false)
+    await flushPromises()
+    expect(api.setPromoteCopiedRecords).toHaveBeenCalledWith(false)
+    await wrapper.get('[aria-label="Закрыть настройки"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('.settings-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get<HTMLInputElement>('#promote-copied-records').element.checked).toBe(false)
+  })
   it('requires confirmation to reset settings and discards a draft limit after reset', async () => {
     const { wrapper, api } = await setup()
     emitState({ ...state(undefined, 2), historyLimit: 250, pasteOnSelect: false, timeFormat: '12h', paused: true })
@@ -319,6 +368,28 @@ describe('settings', () => {
     expect(api.setPasteOnSelect).toHaveBeenCalledWith(false)
     expect(buffer.pasteOnSelect).toBe(false)
     expect(checkbox.element.checked).toBe(false)
+  })
+  it('labels copy as the effective action when auto-paste is unavailable and keeps the preference', async () => {
+    const { wrapper, api, buffer } = await setup()
+    emitState({ ...state(undefined, 2), pasteAvailable: false })
+    await flushPromises()
+    expect(wrapper.get('.record-select').attributes('aria-label')).toMatch(/^Скопировать и скрыть\./)
+    expect(wrapper.get('footer[aria-label="Горячие клавиши"]').text()).toContain('копировать')
+    await wrapper.get('.settings-button').trigger('click')
+    await vi.dynamicImportSettled()
+    const checkbox = wrapper.get<HTMLInputElement>('#paste-on-select')
+    expect(checkbox.element.disabled).toBe(true)
+    expect(checkbox.element.checked).toBe(false)
+    expect(checkbox.element.closest('label')?.textContent).toContain('Автоматическая вставка недоступна')
+    expect(buffer.pasteOnSelect).toBe(true)
+    await checkbox.trigger('change')
+    expect(api.setPasteOnSelect).not.toHaveBeenCalled()
+
+    emitState(state(undefined, 3))
+    await flushPromises()
+    expect(checkbox.element.disabled).toBe(false)
+    expect(checkbox.element.checked).toBe(true)
+    expect(wrapper.get('.record-select').attributes('aria-label')).toMatch(/^Вставить в активное окно\./)
   })
 
   it('updates record times immediately and restores the selected format when settings reopen', async () => {
@@ -444,6 +515,59 @@ describe('settings', () => {
     await wrapper.get('.settings-dialog').trigger('cancel')
     await flushPromises()
     expect(wrapper.find('.settings-dialog').exists()).toBe(false)
+  })
+  it('keeps history when an intermediate limit would prune records or settings close', async () => {
+    const records = Array.from({ length: 7 }, (_, index) => item(`limit-${index}`))
+    const { wrapper, api, buffer } = await setup(records)
+    await wrapper.get('.settings-button').trigger('click')
+    await vi.dynamicImportSettled()
+    vi.useFakeTimers()
+    const input = wrapper.get<HTMLInputElement>('#history-limit')
+    input.element.value = '5'
+    await input.trigger('input')
+    await vi.advanceTimersByTimeAsync(700)
+    await input.trigger('blur')
+    await input.trigger('keydown', { key: 'Enter' })
+    expect(api.setHistoryLimit).not.toHaveBeenCalled()
+    expect(wrapper.find('.review-history-limit').exists()).toBe(true)
+    input.element.value = '500'
+    await input.trigger('input')
+    await vi.advanceTimersByTimeAsync(600)
+    await flushPromises()
+    expect(api.setHistoryLimit).toHaveBeenCalledExactlyOnceWith(500)
+
+    await input.setValue('2')
+    await wrapper.get('.review-history-limit').trigger('click')
+    await wrapper.get('.cancel-history-limit').trigger('click')
+    await wrapper.get('[aria-label="Закрыть настройки"]').trigger('click')
+    await flushPromises()
+    expect(api.setHistoryLimit).toHaveBeenCalledTimes(1)
+    expect(buffer.historyLimit).toBe(500)
+    expect(buffer.clipboardHistory).toHaveLength(7)
+    expect(wrapper.find('.settings-dialog').exists()).toBe(false)
+  })
+  it('requires confirmation of the increased number of deletions before pruning ordinary history', async () => {
+    const records = [item('first'), item('second'), item('third'), { ...item('pinned'), pinned: true }]
+    const { wrapper, api, buffer } = await setup(records)
+    await wrapper.get('.settings-button').trigger('click')
+    await vi.dynamicImportSettled()
+    await wrapper.get('#history-limit').setValue('1')
+    await wrapper.get('.review-history-limit').trigger('click')
+    expect(wrapper.get('#history-limit-description').text()).toContain('максимум 2')
+    const latest = [item('arrived'), ...records]
+    emitState(state(latest, 2))
+    await flushPromises()
+    await wrapper.get('.apply-history-limit').trigger('click')
+    expect(api.setHistoryLimit).not.toHaveBeenCalled()
+    expect(wrapper.get('#history-limit-description').text()).toContain('максимум 3')
+    vi.mocked(api.setHistoryLimit).mockImplementationOnce(async limit => {
+      emitState({ ...state([latest[0], records[3]], 3), historyLimit: limit })
+    })
+    await wrapper.get('.apply-history-limit').trigger('click')
+    await flushPromises()
+    expect(api.setHistoryLimit).toHaveBeenCalledExactlyOnceWith(1, 3)
+    expect(buffer.historyLimit).toBe(1)
+    expect(buffer.clipboardHistory.map(record => record.id)).toEqual(['arrived', 'pinned'])
   })
   it('flushes a pending limit when settings close before the delay', async () => {
     const { wrapper, api, buffer } = await setup()
@@ -748,7 +872,7 @@ describe('file locations', () => {
 })
 
 describe('search and navigation', () => {
-  it.each([['.record-select', 'я'], ['.preview-button', '#'], ['header .icon-button', ' '], ['main', '🙂']])('starts search from %s without losing or duplicating %s', async (target, key) => {
+  it.each([['.record-select', 'я'], ['.preview-button', '#'], ['header .icon-button', '7'], ['main', '🙂'], ['main', ' ']])('starts search from %s without losing or duplicating %s', async (target, key) => {
     const { wrapper, api } = await setup()
     const element = wrapper.get(target).element as HTMLElement
     element.focus()
@@ -761,6 +885,16 @@ describe('search and navigation', () => {
     expect(api.copyItem).not.toHaveBeenCalled()
     expect(api.setPaused).not.toHaveBeenCalled()
     expect(HTMLDialogElement.prototype.showModal).not.toHaveBeenCalled()
+  })
+  it.each(['.favorite-button', '.record-select', 'header .settings-button'])('preserves native Space on %s', async target => {
+    const { wrapper } = await setup()
+    const element = wrapper.get<HTMLButtonElement>(target).element
+    element.focus()
+    const event = new KeyboardEvent('keydown', { key: ' ', code: 'Space', bubbles: true, cancelable: true })
+    expect(element.dispatchEvent(event)).toBe(true)
+    expect(event.defaultPrevented).toBe(false)
+    expect(wrapper.get<HTMLInputElement>('#history-search').element.value).toBe('')
+    expect(document.activeElement).toBe(element)
   })
   it('clears search and filters on Escape and returns focus from a list action', async () => {
     const { wrapper, api } = await setup()
@@ -934,6 +1068,46 @@ describe('search and navigation', () => {
     expect(wrapper.find('[aria-label="Выбранные фильтры"]').exists()).toBe(false)
     expect(wrapper.get('dialog [role="alert"]').text()).toContain('Версия не сохранена')
   })
+  it('lets an evicted draft be saved as a standalone record', async () => {
+    const { wrapper, api } = await setup()
+    await wrapper.get('.preview-button').trigger('click'); await flushPromises()
+    await wrapper.get('.edit-toggle').trigger('click'); await flushPromises()
+    await wrapper.get('textarea').setValue('draft to recover')
+    emitState(state([item('replacement')], 2))
+    vi.mocked(api.saveTextRevision).mockRejectedValueOnce(new Error('source evicted'))
+    await wrapper.get('.close-preview').trigger('click'); await flushPromises()
+    expect(wrapper.get('textarea').element.value).toBe('draft to recover')
+    expect(HTMLDialogElement.prototype.close).not.toHaveBeenCalled()
+
+    vi.mocked(api.saveTextRevision).mockImplementationOnce(async (_id, text) => {
+      const recovered = item('recovered', text)
+      emitState(state([recovered], 3))
+      return recovered
+    })
+    await wrapper.findAll('.preview-dialog button').find(button => button.text() === 'Сохранить новой записью')!.trigger('click')
+    await flushPromises()
+    expect(api.saveTextRevision).toHaveBeenLastCalledWith(null, 'draft to recover')
+    expect(wrapper.get('.record-select').text()).toContain('draft to recover')
+    await wrapper.get('.close-preview').trigger('click'); await flushPromises()
+    expect(HTMLDialogElement.prototype.close).toHaveBeenCalledOnce()
+  })
+  it('allows selecting and explicitly discarding a draft that cannot fit in history', async () => {
+    const { wrapper, api } = await setup()
+    await wrapper.get('.preview-button').trigger('click'); await flushPromises()
+    await wrapper.get('.edit-toggle').trigger('click'); await flushPromises()
+    const editor = wrapper.get('textarea')
+    await editor.setValue('draft to select')
+    vi.mocked(api.saveTextRevision).mockRejectedValueOnce(new Error('history full'))
+    await wrapper.get('.close-preview').trigger('click'); await flushPromises()
+    const button = (label: string) => wrapper.findAll('.preview-dialog button').find(candidate => candidate.text() === label)!
+
+    await button('Выделить текст для копирования').trigger('click')
+    expect(document.activeElement).toBe(editor.element)
+    expect(editor.element.selectionEnd - editor.element.selectionStart).toBe('draft to select'.length)
+    await button('Закрыть без сохранения').trigger('click'); await flushPromises()
+    expect(HTMLDialogElement.prototype.close).toHaveBeenCalledOnce()
+    expect(api.saveTextRevision).toHaveBeenCalledOnce()
+  })
   it('shows file names in cards and complete paths in a read-only file preview', async () => {
     const record = item('files', 'C:/Docs/report.pdf\nC:/Docs/table.xlsx')
     record.type = record.params.type = 'file'
@@ -1005,6 +1179,45 @@ describe('search and navigation', () => {
     expect(api.activateItem).toHaveBeenCalledWith('first')
     expect(api.hideWindow).not.toHaveBeenCalled()
   })
+  it('keeps a large history windowed and focuses an initially unmounted selection', async () => {
+    const records = Array.from({ length: 10_000 }, (_, index) => item(`virtual-${index}`, `Text ${index}`))
+    const { wrapper } = await setup(records)
+    const list = wrapper.get<HTMLElement>('.history-list')
+    expect(wrapper.findAll('.record-select').length).toBeLessThan(30)
+    expect(wrapper.find('#record-virtual-9999').exists()).toBe(false)
+    expect(wrapper.get('[data-history-row="virtual-0"]').attributes('aria-setsize')).toBe('10000')
+
+    await wrapper.get('input').trigger('keydown', { key: 'ArrowUp' })
+    await flushPromises()
+    expect(wrapper.get('#record-virtual-9999').attributes('aria-pressed')).toBe('true')
+    expect(document.activeElement?.id).toBe('record-virtual-9999')
+
+    list.element.scrollTop = 86 * 5000 + 40
+    await list.trigger('scroll')
+    expect(wrapper.find('#record-virtual-5000').exists()).toBe(true)
+    expect(wrapper.find('#record-virtual-0').exists()).toBe(false)
+    expect(wrapper.findAll('.record-select').length).toBeLessThan(30)
+    expect(document.activeElement?.id).toBe('record-virtual-9999')
+  })
+  it('keeps the focused date button mounted when its group scrolls out of the window', async () => {
+    const records = Array.from({ length: 140 }, (_, index) => ({
+      ...item(`date-row-${index}`), createdAt: new Date(2026, 10, 16 - Math.floor(index / 20)).getTime(),
+    }))
+    const { wrapper } = await setup(records)
+    const list = wrapper.get<HTMLElement>('.history-list')
+    list.element.scrollTop = 20 * 86 + 40
+    await list.trigger('scroll')
+    const day = wrapper.get<HTMLButtonElement>('[data-date-group="2026-11-15"] .history-date-button').element
+    day.focus()
+    list.element.scrollTop = 120 * 86 + 6 * 40
+    await list.trigger('scroll')
+    expect(day.isConnected).toBe(true)
+    expect(document.activeElement).toBe(day)
+    expect(wrapper.findAll('.record-select').length).toBeLessThan(30)
+    wrapper.get<HTMLInputElement>('#history-search').element.focus()
+    await flushPromises()
+    expect(day.isConnected).toBe(false)
+  })
   it('preserves the identity of selection when new records arrive', async () => {
     const { wrapper, api } = await setup([item('first'), item('second')])
     await wrapper.get('#record-second').trigger('focus')
@@ -1028,6 +1241,20 @@ describe('search and navigation', () => {
     await flushPromises()
     expect(api.hideWindow).not.toHaveBeenCalled()
     expect(wrapper.get('[role="alert"]').text()).toContain('Не удалось скопировать')
+    expect(wrapper.get('[role="alert"]').classes()).toContain('text-danger')
+  })
+  it('uses the warning colors for the manual paste fallback', async () => {
+    const { wrapper, api } = await setup()
+    const message = 'Не удалось выполнить автоматическую вставку. Запись скопирована, её можно вставить вручную через Ctrl+V.'
+    vi.mocked(api.activateItem).mockResolvedValueOnce({ status: 'paste-unavailable', canPasteManually: true, message })
+    await wrapper.get('.record-select').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toBe(message)
+    expect(wrapper.get('[role="alert"]').classes()).toEqual(expect.arrayContaining(['bg-warning-surface', 'text-warning-ink']))
+    vi.mocked(api.activateItem).mockResolvedValueOnce({ status: 'paste-unavailable', message: 'Содержимое буфера обмена изменилось.' })
+    await wrapper.get('.record-select').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').classes()).toContain('text-danger')
   })
   it.each(['missing', 'unavailable'] as const)('keeps the window open and explains a %s file copy', async status => {
     const record = item('files', 'C:/missing.zip')
@@ -1042,52 +1269,40 @@ describe('search and navigation', () => {
     expect(wrapper.get('[role="alert"]').text()).toBe(message)
     expect(wrapper.get('.file-unavailable').attributes('title')).toBe(message)
   })
-  it('checks only visible file records, caches scrolling checks and places an explanation icon after the source', async () => {
-    const record = item('files', 'C:/Downloads/folder/')
+  it('leaves displayed paths untouched and checks only the path selected explicitly', async () => {
+    const record = item('files', 'C:/Downloads/other.zip\nC:/Downloads/folder/')
     record.type = record.params.type = 'file'
-    record.fileUris = ['file:///C:/Downloads/folder/']
+    record.fileUris = ['file:///C:/Downloads/other.zip', 'file:///C:/Downloads/folder/']
     const { wrapper, api } = await setup([record])
-    const entry = { target: wrapper.get('[data-file-id]').element, isIntersecting: true } as IntersectionObserverEntry
     const message = 'Файл или папка больше не существует: folder.'
-    expect(wrapper.get('.text-preview').text()).toBe('folder')
-    expect(api.checkFiles).not.toHaveBeenCalled()
-    vi.mocked(api.checkFiles).mockResolvedValueOnce({ status: 'missing', message })
-    intersect([entry], {} as IntersectionObserver)
+    expect(wrapper.get('.text-preview').text()).toContain('folder')
+    await wrapper.get('.history-list').trigger('scroll')
+    window.dispatchEvent(new Event('focus'))
+    emitShown()
     await flushPromises()
-    expect(api.checkFiles).toHaveBeenCalledWith('files')
+    expect(api.checkFile).not.toHaveBeenCalled()
+    await wrapper.findAll('.file-location')[1].trigger('click')
+    expect(api.checkFile).not.toHaveBeenCalled()
+    vi.mocked(api.checkFile).mockResolvedValueOnce({ status: 'missing', message })
+    await wrapper.get('.check-file-availability').trigger('click')
+    await flushPromises()
+    expect(api.checkFile).toHaveBeenCalledExactlyOnceWith('files', 1)
+    expect(wrapper.get('.file-actions [role="status"]').text()).toBe(message)
     const icon = wrapper.get('.file-unavailable')
     expect(icon.attributes('title')).toBe(message)
     expect(icon.element.previousElementSibling?.textContent).toBe('Fixture: app')
-    await wrapper.get('.history-list').trigger('scroll')
+    await wrapper.get('.close-file-actions').trigger('click')
+    await wrapper.findAll('.file-location')[0].trigger('click')
+    await wrapper.get('.check-file-availability').trigger('click')
     await flushPromises()
-    expect(api.checkFiles).toHaveBeenCalledTimes(1)
-    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 6000)
-    await wrapper.get('.history-list').trigger('scroll')
-    await flushPromises()
-    expect(api.checkFiles).toHaveBeenCalledTimes(2)
-    expect(wrapper.find('.file-unavailable').exists()).toBe(false)
-    // A fresh manual check still happens even while the background result is cached.
+    expect(api.checkFile).toHaveBeenLastCalledWith('files', 0)
+    expect(wrapper.get('.file-unavailable').attributes('title')).toBe(message)
+    await wrapper.get('.close-file-actions').trigger('click')
     await wrapper.get('.record-select').trigger('click')
     await flushPromises()
     expect(api.activateItem).toHaveBeenCalledWith('files')
+    expect(api.checkFile).toHaveBeenCalledTimes(2)
     expect(wrapper.find('.file-unavailable').exists()).toBe(false)
-  })
-  it('keeps a newer manual failure when an older background check completes late', async () => {
-    const record = item('files', 'C:/removed.zip')
-    record.type = record.params.type = 'file'
-    record.fileUris = ['file:///C:/removed.zip']
-    const { wrapper, api } = await setup([record])
-    let finish!: (result: Awaited<ReturnType<ElectronAPI['checkFiles']>>) => void
-    vi.mocked(api.checkFiles).mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
-    intersect([{ target: wrapper.get('[data-file-id]').element, isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
-    const message = 'Файл больше не существует: removed.zip'
-    vi.mocked(api.activateItem).mockResolvedValueOnce({ status: 'missing', message })
-    await wrapper.get('.record-select').trigger('click')
-    await flushPromises()
-    finish({ status: 'available', message: 'Earlier check' })
-    await flushPromises()
-    expect(wrapper.get('.file-unavailable').attributes('title')).toBe(message)
-    expect(api.hideWindow).not.toHaveBeenCalled()
   })
   it('waits for activation completion before accepting another action', async () => {
     const { wrapper, api, buffer } = await setup()

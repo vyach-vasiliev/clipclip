@@ -2,12 +2,15 @@ import koffi from 'koffi'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { BrowserWindow } from 'electron'
 
-type Target = { hwnd: bigint; pid: number }
+export type PasteTarget = { hwnd: bigint; pid: number }
 const WM_ACTIVATE = 0x0006
 const PASTE_BLOCKING_KEYS = [0x01, 0x0d, 0x10, 0x11, 0x12, 0x5b, 0x5c]
 const FOCUS_ERROR = 'Не удалось вернуть фокус в прежнее окно.'
 
 export class PasteError extends Error {}
+export class ClipboardChangedError extends PasteError {
+  constructor() { super('Содержимое буфера обмена изменилось. Выберите запись повторно.') }
+}
 
 export interface PasteApi {
   foreground(): bigint
@@ -15,30 +18,57 @@ export interface PasteApi {
   usable(hwnd: bigint): boolean
   activate(hwnd: bigint): void
   keyDown(key: number): boolean
+  clipboardSequence(): number
   sendPaste(): boolean
 }
 
 // Keep the last external window even when ClipClip is opened from the taskbar.
 export function createPasteController(api: PasteApi, ownPid = process.pid) {
-  let target: Target | null = null
-  function capture(hwnd = api.foreground()) {
+  let target: PasteTarget | null = null
+  function readTarget(hwnd: bigint): PasteTarget | null {
     const pid = hwnd ? api.processId(hwnd) : 0
-    if (pid && pid !== ownPid && api.usable(hwnd)) target = { hwnd, pid }
+    return pid && pid !== ownPid && api.usable(hwnd) ? { hwnd, pid } : null
   }
-  function valid(value: Target) {
+  function capture(hwnd = api.foreground()) {
+    target = readTarget(hwnd) ?? target
+  }
+  function valid(value: PasteTarget) {
     return api.usable(value.hwnd) && api.processId(value.hwnd) === value.pid
   }
-  function checkTarget(value: Target, current: () => boolean) {
+  function checkTarget(value: PasteTarget, current: () => boolean) {
     if (!current()) throw new PasteError('Вставка отменена.')
     if (!valid(value)) throw new PasteError('Окно для вставки недоступно.')
+  }
+  function checkClipboard(expectedSequence: number) {
+    if (!expectedSequence || expectedSequence !== api.clipboardSequence()) throw new ClipboardChangedError()
   }
   return {
     capture,
     target: () => target && valid(target) ? { ...target } : null,
-    async paste(value: Target, picker: bigint, current: () => boolean) {
+    foregroundHandle: () => api.foreground(),
+    foregroundTarget: () => readTarget(api.foreground()),
+    isForegroundTarget: (value: PasteTarget) => api.foreground() === value.hwnd && api.processId(value.hwnd) === value.pid,
+    clipboardSequence: () => api.clipboardSequence(),
+    async pasteIntoForeground(value: PasteTarget, expectedSequence: number, current: () => boolean) {
+      for (let attempt = 0; attempt < 50; attempt++) {
+        checkTarget(value, current)
+        checkClipboard(expectedSequence)
+        if (api.foreground() !== value.hwnd) throw new PasteError('Прежнее окно потеряло фокус.')
+        if (!PASTE_BLOCKING_KEYS.some(key => api.keyDown(key))) {
+          checkClipboard(expectedSequence)
+          if (api.foreground() !== value.hwnd) throw new PasteError('Прежнее окно потеряло фокус.')
+          if (!api.sendPaste()) throw new PasteError('Windows не разрешила автоматическую вставку.')
+          return
+        }
+        await delay(20)
+      }
+      throw new PasteError('Отпустите клавиши и повторите вставку.')
+    },
+    async paste(value: PasteTarget, picker: bigint, expectedSequence: number, current: () => boolean) {
       // Keep Enter and its repeats in the picker until the user releases it.
       for (let attempt = 0; attempt < 50; attempt++) {
         checkTarget(value, current)
+        checkClipboard(expectedSequence)
         if (api.foreground() !== picker) throw new PasteError(FOCUS_ERROR)
         if (!PASTE_BLOCKING_KEYS.some(key => api.keyDown(key))) break
         if (attempt === 49) throw new PasteError('Отпустите клавиши и повторите вставку.')
@@ -50,11 +80,13 @@ export function createPasteController(api: PasteApi, ownPid = process.pid) {
       let restored = false
       for (let attempt = 0; attempt < 50; attempt++) {
         checkTarget(value, current)
+        checkClipboard(expectedSequence)
         const foreground = api.foreground()
         if (foreground === value.hwnd) {
           restored = true
           if (!PASTE_BLOCKING_KEYS.some(key => api.keyDown(key))) {
             if (api.foreground() !== value.hwnd) break
+            checkClipboard(expectedSequence)
             if (!api.sendPaste()) throw new PasteError('Windows не разрешила автоматическую вставку.')
             return
           }
@@ -77,6 +109,7 @@ export function createWindowsPasteApi(): PasteApi {
   const getClass = user32.func('int __stdcall GetClassNameW(uintptr_t hwnd, void *name, int length)')
   const activate = user32.func('int __stdcall SetForegroundWindow(uintptr_t hwnd)')
   const keyState = user32.func('int16_t __stdcall GetAsyncKeyState(int key)')
+  const clipboardSequence = user32.func('uint32_t __stdcall GetClipboardSequenceNumber()')
   const sendInput = user32.func('uint __stdcall SendInput(uint count, const void *inputs, int size)')
   return {
     foreground: () => BigInt(foreground()),
@@ -89,6 +122,7 @@ export function createWindowsPasteApi(): PasteApi {
     },
     activate: hwnd => { activate(hwnd) },
     keyDown: key => keyState(key) < 0,
+    clipboardSequence: () => clipboardSequence(),
     sendPaste: () => {
       // INPUT includes a pointer-aligned union whose largest member is MOUSEINPUT.
       const size = process.arch === 'ia32' ? 28 : 40
@@ -105,8 +139,9 @@ export function createWindowsPasteApi(): PasteApi {
   }
 }
 
-export function createWindowsPaste() {
-  const controller = createPasteController(createWindowsPasteApi())
+export function createWindowsPaste(readSequence?: () => number) {
+  const api = createWindowsPasteApi()
+  const controller = createPasteController(readSequence ? { ...api, clipboardSequence: readSequence } : api)
   controller.capture()
   const timer = setInterval(controller.capture, 100)
   timer.unref()

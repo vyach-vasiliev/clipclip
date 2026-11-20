@@ -1,17 +1,22 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { mdiClose, mdiContentCopy, mdiFolderOpenOutline } from '@mdi/js'
-import type { ClipboardHistoryItem } from '../../shared/clipboard'
+import { mdiClose, mdiContentCopy, mdiFileSearchOutline, mdiFolderOpenOutline } from '@mdi/js'
+import type { ClipboardHistoryItem, FileCheckResult } from '../../shared/clipboard'
 import { filePathLabel } from '../../shared/files'
 import { useBufferStore } from '../store/buffer'
 import AppIcon from './AppIcon.vue'
 
 const props = defineProps<{ item: ClipboardHistoryItem; index: number }>()
-const emit = defineEmits<{ close: []; copied: [item: ClipboardHistoryItem] }>()
+const emit = defineEmits<{ close: []; copied: [item: ClipboardHistoryItem]; checked: [id: string, result: FileCheckResult, index: number] }>()
 const buffer = useBufferStore()
 const dialog = ref<HTMLDialogElement>()
 const path = computed(() => filePathLabel(props.item.fileUris![props.index]))
-const label = computed(() => props.item.fileKinds?.[props.index] === 'folder' ? 'Папка' : 'Файл')
+const label = computed(() => {
+  const kind = props.item.fileKinds?.[props.index]
+  return kind === 'folder' ? 'Папка' : kind === 'file' ? 'Файл' : 'Файл или папка'
+})
+const checking = ref(false)
+const availability = ref<FileCheckResult>()
 let pointerStartedOutside = false
 function outside(event: MouseEvent) {
   if (!dialog.value || event.target !== dialog.value) return false
@@ -29,6 +34,21 @@ async function copyPath() {
 async function reveal() {
   if (await buffer.revealFile(props.item.id, props.index)) emit('close')
 }
+async function checkAvailability() {
+  if (checking.value || buffer.busy) return
+  const { id } = props.item
+  const { index } = props
+  checking.value = true
+  availability.value = undefined
+  try {
+    availability.value = await window.electronAPI!.checkFile(id, index)
+  } catch {
+    availability.value = { status: 'unavailable', message: 'Не удалось проверить выбранный путь.' }
+  } finally {
+    checking.value = false
+  }
+  emit('checked', id, availability.value, index)
+}
 onMounted(() => dialog.value?.showModal())
 onBeforeUnmount(() => dialog.value?.close())
 </script>
@@ -43,13 +63,19 @@ onBeforeUnmount(() => dialog.value?.close())
     </header>
     <p id="file-actions-path" class="mb-3 select-text text-xs leading-relaxed text-muted wrap-anywhere">{{ path }}</p>
     <div class="flex flex-col gap-1">
-      <button type="button" autofocus class="copy-file-path flex min-h-11 items-center gap-2 rounded-lg px-3 text-left hover:bg-accent/8" :disabled="buffer.busy" @click="copyPath">
+      <button type="button" autofocus class="copy-file-path flex min-h-11 items-center gap-2 rounded-lg px-3 text-left hover:bg-accent/8" :disabled="buffer.busy || checking" @click="copyPath">
         <AppIcon :path="mdiContentCopy" class="size-5 text-accent" />Скопировать путь
       </button>
-      <button type="button" class="reveal-file flex min-h-11 items-center gap-2 rounded-lg px-3 text-left hover:bg-accent/8" :disabled="buffer.busy" @click="reveal">
+      <button type="button" class="reveal-file flex min-h-11 items-center gap-2 rounded-lg px-3 text-left hover:bg-accent/8" :disabled="buffer.busy || checking" @click="reveal">
         <AppIcon :path="mdiFolderOpenOutline" class="size-5 text-accent" />Открыть в Проводнике
       </button>
+      <button type="button" class="check-file-availability flex min-h-11 items-center gap-2 rounded-lg px-3 text-left hover:bg-accent/8"
+        :disabled="buffer.busy || checking" @click="checkAvailability">
+        <AppIcon :path="mdiFileSearchOutline" class="size-5 text-accent" />Проверить доступность
+      </button>
     </div>
+    <p v-if="checking || availability" class="mt-3 text-xs" :class="checking || availability?.status === 'available' ? 'text-muted' : 'text-danger'"
+      role="status">{{ checking ? 'Проверка выбранного пути…' : availability?.message }}</p>
     <p v-if="buffer.error" class="mt-3 text-xs text-danger" role="alert">{{ buffer.error }}</p>
   </dialog>
 </template>

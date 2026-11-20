@@ -39,6 +39,7 @@ export function parseBackup(text: string): BackupManifest {
     || typeof manifest.exportedAt !== 'string' || manifest.exportedAt.length > 100 || !Number.isFinite(Date.parse(manifest.exportedAt))
     || !settings || !isHistoryLimit(settings.historyLimit) || typeof settings.paused !== 'boolean' || !shortcuts || shortcutError(shortcuts)
     || (settings.pasteOnSelect !== undefined && typeof settings.pasteOnSelect !== 'boolean')
+    || (settings.promoteCopiedRecords !== undefined && typeof settings.promoteCopiedRecords !== 'boolean')
     || (settings.timeFormat !== undefined && !isTimeFormat(settings.timeFormat))
     || !Array.isArray(manifest.history) || manifest.history.length > MAX_HISTORY_LIMIT * 2) {
     throw new BackupError('Некорректная структура файла экспорта.')
@@ -58,7 +59,8 @@ export function parseBackup(text: string): BackupManifest {
   return { format: BACKUP_FORMAT, manifestVersion: BACKUP_MANIFEST_VERSION,
     appVersion: manifest.appVersion, exportedAt: manifest.exportedAt,
     settings: { historyLimit: settings.historyLimit, paused: settings.paused,
-      pasteOnSelect: settings.pasteOnSelect ?? true, timeFormat: settings.timeFormat ?? DEFAULT_TIME_FORMAT, shortcuts }, history: items }
+      pasteOnSelect: settings.pasteOnSelect ?? true, promoteCopiedRecords: settings.promoteCopiedRecords ?? true,
+      timeFormat: settings.timeFormat ?? DEFAULT_TIME_FORMAT, shortcuts }, history: items }
 }
 
 export function serializeBackup(items: ClipboardHistoryItem[], settings: BackupSettings, appVersion: string): string {

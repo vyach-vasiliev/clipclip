@@ -32,6 +32,15 @@ describe('JSON backup manifest', () => {
     legacy.settings.pasteOnSelect = 'false'
     expect(() => parseBackup(JSON.stringify(legacy))).toThrow()
   })
+  it('round-trips history promotion and validates the optional legacy setting', () => {
+    const text = serializeBackup([], { ...settings, promoteCopiedRecords: false }, '2.0.0')
+    expect(parseBackup(text).settings.promoteCopiedRecords).toBe(false)
+    const legacy = JSON.parse(text)
+    delete legacy.settings.promoteCopiedRecords
+    expect(parseBackup(JSON.stringify(legacy)).settings.promoteCopiedRecords).toBe(true)
+    legacy.settings.promoteCopiedRecords = 'false'
+    expect(() => parseBackup(JSON.stringify(legacy))).toThrow('Некорректная структура')
+  })
   it('imports legacy shortcuts without discarding existing custom bindings', () => {
     const value = manifest()
     delete value.settings.shortcuts.showFavorites

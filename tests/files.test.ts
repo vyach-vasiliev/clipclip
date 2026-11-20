@@ -25,6 +25,17 @@ afterEach(async () => {
 })
 
 describe('file availability before clipboard writes', () => {
+  it('probes only the selected path in a group', async () => {
+    await fs.mkdir(path.join(directory, 'selected'))
+    const choices = [uri('another file'), uri('selected')]
+    const checker = new FileChecker()
+    await expect(checker.checkPath(choices, 1)).resolves.toEqual({
+      status: 'available', message: 'Выбранный путь доступен.', kinds: ['folder'],
+    })
+    expect(fs.stat).toHaveBeenCalledExactlyOnceWith(path.join(directory, 'selected'))
+    expect(() => checker.checkPath(choices, 2)).toThrow('Некорректный путь')
+    expect(fs.stat).toHaveBeenCalledTimes(1)
+  })
   it('copies a mixed list of arbitrary files, Unicode names and directories', async () => {
     await fs.writeFile(path.join(directory, 'Архив #1.zip'), 'synthetic')
     await fs.writeFile(path.join(directory, 'app.exe'), 'synthetic')

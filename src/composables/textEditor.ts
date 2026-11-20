@@ -1,7 +1,7 @@
 import { onBeforeUnmount, ref, watch } from 'vue'
 import type { ClipboardHistoryItem } from '../../shared/clipboard'
 
-export function useTextEditor(save: (id: string, text: string) => Promise<ClipboardHistoryItem>) {
+export function useTextEditor(save: (id: string | null, text: string) => Promise<ClipboardHistoryItem>) {
   const draft = ref('')
   const editing = ref(false)
   const saving = ref(false)
@@ -20,14 +20,20 @@ export function useTextEditor(save: (id: string, text: string) => Promise<Clipbo
     saveError.value = ''
   }
   function flush(): Promise<boolean> {
+    return enqueueSave(false)
+  }
+  function saveAsNew(): Promise<boolean> {
+    return enqueueSave(true)
+  }
+  function enqueueSave(standalone: boolean): Promise<boolean> {
     clearTimeout(timer)
     const text = draft.value
     queue = queue.then(async () => {
-      if (!currentId.value || text === savedText.value) return true
+      if (!standalone && (!currentId.value || text === savedText.value)) return true
       saving.value = true
       saveError.value = ''
       try {
-        const item = await save(currentId.value, text)
+        const item = await save(standalone ? null : currentId.value, text)
         currentId.value = item.id
         savedText.value = text
         return true
@@ -52,6 +58,12 @@ export function useTextEditor(save: (id: string, text: string) => Promise<Clipbo
     draft.value = originalText.value
     await flush()
   }
+  function discard() {
+    clearTimeout(timer)
+    editing.value = false
+    draft.value = savedText.value
+    saveError.value = ''
+  }
   onBeforeUnmount(() => { clearTimeout(timer) })
-  return { draft, editing, saving, saveError, originalText, savedText, currentId, load, flush, toggle, reset }
+  return { draft, editing, saving, saveError, originalText, savedText, currentId, load, flush, saveAsNew, discard, toggle, reset }
 }

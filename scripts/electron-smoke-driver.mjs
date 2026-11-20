@@ -50,14 +50,37 @@ async function run() {
     'Многострочная запись сохраняет переносы строк.\n'.repeat(8)
   process.env.CLIPCLIP_TEST_IMAGE = nativeImage.createFromPath(path.join(root, 'public/notepad.png')).resize({ width: 1600, height: 960 }).toDataURL()
   const firstWindow = renderedWindow()
+  let checkedStartup = false
+  app.once('clipclip:test:initializing', resume => {
+    app.emit('second-instance')
+    app.emit('activate')
+    assert.equal(BrowserWindow.getAllWindows().length, 0, 'Opening during initialization must wait for the app to finish starting')
+    checkedStartup = true
+    resume()
+  })
   console.log('Launching isolated Electron fixture')
 
   try {
     let window = await firstWindow
+    assert.equal(checkedStartup, true)
+    assert.deepEqual(BrowserWindow.getAllWindows(), [window])
     assert.deepEqual(window.getSize(), [460, 560])
     const evaluate = async code => {
       try { return await window.webContents.executeJavaScript('(async () => { ' + (code.includes(';') ? code : 'return (' + code + ')') + ' })()') }
       catch (error) { throw new Error('Renderer check failed: ' + code, { cause: error }) }
+    }
+    const waitForRenderer = async (condition, message) => {
+      for (let attempt = 0; attempt < 40; attempt++) {
+        if (await evaluate(condition)) return
+        await delay(50)
+      }
+      assert.fail(message)
+    }
+    const focusPicker = async () => {
+      if (window.isFocused()) return
+      app.emit('activate')
+      for (let attempt = 0; attempt < 20 && !window.isFocused(); attempt++) await delay(50)
+      assert.ok(window.isFocused(), 'ClipClip must own focus before activating a record')
     }
     for (let attempt = 0; attempt < 50; attempt++) {
       if (await evaluate('Boolean(document.querySelector(".record-select"))')) break
@@ -66,10 +89,11 @@ async function run() {
     const capabilities = await evaluate('({api: Object.keys(window.electronAPI), genericIPC: typeof window.ipcRenderer, records: document.querySelectorAll(".record-select").length})')
     assert.equal(capabilities.genericIPC, 'undefined')
     assert.equal(capabilities.records, 2)
-    assert.deepEqual(capabilities.api.sort(), ['activateItem', 'setPasteOnSelect', 'copyItem', 'copyColor', 'checkFiles', 'revealFile', 'copyFilePath', 'saveTextRevision', 'deleteItem', 'getHistory', 'hideWindow', 'setPreviewFullscreen', 'onPreviewFullscreenChanged', 'onHistoryChanged', 'onWindowShown', 'setPaused', 'setHistoryLimit', 'setTimeFormat', 'resetSettings', 'setPinned', 'clearHistory', 'exportHistory', 'importHistory', 'setShortcuts', 'setShortcutCapture', 'undoDelete'].sort())
+    assert.deepEqual(capabilities.api.sort(), ['activateItem', 'setPasteOnSelect', 'setPromoteCopiedRecords', 'copyItem', 'copyColor', 'checkFile', 'revealFile', 'copyFilePath', 'saveTextRevision', 'deleteItem', 'getHistory', 'hideWindow', 'openFullWindow', 'setPreviewFullscreen', 'onPreviewFullscreenChanged', 'onHistoryChanged', 'onWindowShown', 'onQuickPickChanged', 'onQuickPickAction', 'setPaused', 'setHistoryLimit', 'setTimeFormat', 'resetSettings', 'setPinned', 'clearHistory', 'exportHistory', 'importHistory', 'setShortcuts', 'setShortcutCapture', 'undoDelete'].sort())
     assert.equal(window.webContents.isDevToolsOpened(), false)
     window.show()
     window.focus()
+    await focusPicker()
     await delay(100)
     assert.equal(await evaluate('document.activeElement === document.querySelector("input")'), true)
     window.webContents.sendInputEvent({ type: 'mouseMove', x: 20, y: 20 })
@@ -81,8 +105,7 @@ async function run() {
     assert.equal(await evaluate('getComputedStyle(document.querySelector(".record-actions")).opacity'), '0')
     assert.equal(await evaluate('getComputedStyle(document.querySelector(".record-actions")).pointerEvents'), 'none')
     window.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(cardBeforeActions.left + 20), y: Math.round(cardBeforeActions.top + 20) })
-    await delay(50)
-    assert.equal(await evaluate('getComputedStyle(document.querySelector(".record-actions")).opacity'), '1')
+    await waitForRenderer('Array.from(document.querySelectorAll(".record-actions")).some(actions => getComputedStyle(actions).opacity === "1")', 'Hover must reveal the record actions')
     assert.equal(await evaluate('getComputedStyle(document.querySelector(".record-time")).visibility'), 'visible')
     assert.deepEqual(await evaluate('document.querySelector(".record-time").getBoundingClientRect().toJSON()'), timeBeforeHover)
     assert.match(await evaluate('document.querySelector(".record-time").textContent'), /^\d{2}:\d{2}$/)
@@ -104,16 +127,26 @@ async function run() {
     assert.equal(await evaluate('getComputedStyle(document.querySelector(".record-actions")).opacity'), '0')
     assert.deepEqual(await evaluate('document.querySelector(".clipboard-record").getBoundingClientRect().toJSON()'), cardBeforeActions)
     await screenshot(window, 'record-actions-idle.png')
-    const thumbnail = await evaluate('document.querySelector(".image-preview").getBoundingClientRect().toJSON()')
     const listHeightBeforeHover = await evaluate('document.querySelector(".history-list").scrollHeight')
     window.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(cardBeforeActions.left + 20), y: Math.round(cardBeforeActions.bottom - 8) })
     await delay(550)
     assert.equal(await evaluate('Boolean(document.querySelector(".image-hover-preview"))'), false)
-    window.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round((thumbnail.left + thumbnail.right) / 2), y: Math.round((thumbnail.top + thumbnail.bottom) / 2) })
-    await delay(250)
-    assert.equal(await evaluate('Boolean(document.querySelector(".image-hover-preview"))'), false)
-    await delay(300)
-    assert.equal(await evaluate('Boolean(document.querySelector(".image-hover-preview img"))'), true)
+    let hoverPreview = false
+    for (let attempt = 0; attempt < 3 && !hoverPreview; attempt++) {
+      if (attempt) {
+        window.webContents.sendInputEvent({ type: 'mouseMove', x: 20, y: 20 })
+        await delay(80)
+      }
+      const thumbnail = await evaluate('document.querySelector(".image-preview").getBoundingClientRect().toJSON()')
+      window.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round((thumbnail.left + thumbnail.right) / 2), y: Math.round((thumbnail.top + thumbnail.bottom) / 2) })
+      await delay(250)
+      assert.equal(await evaluate('Boolean(document.querySelector(".image-hover-preview"))'), false)
+      for (let ready = 0; ready < 24; ready++) {
+        if (await evaluate('Boolean(document.querySelector(".image-hover-preview img"))')) { hoverPreview = true; break }
+        await delay(50)
+      }
+    }
+    assert.equal(hoverPreview, true, 'The image preview must appear after a sustained native mouse hover')
     const hoverBounds = await evaluate('document.querySelector(".image-hover-preview").getBoundingClientRect().toJSON()')
     assert.ok(Math.abs(hoverBounds.left - 14) < 1 && hoverBounds.width > window.getSize()[0] * .9)
     assert.ok(hoverBounds.top >= 0 && hoverBounds.bottom <= window.getSize()[1])
@@ -198,6 +231,7 @@ async function run() {
     await evaluate('document.querySelector(".date-filter-clear").click()')
     nativeTheme.themeSource = 'light'
     window.setSize(460, 560); await delay(50)
+    await evaluate('const input = document.querySelector("#history-search"); input.value = ""; input.dispatchEvent(new Event("input", { bubbles: true }));')
     await evaluate('document.querySelector(".preview-button").focus()')
     window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'f' })
     window.webContents.sendInputEvent({ type: 'char', keyCode: 'f' })
@@ -233,23 +267,44 @@ async function run() {
     await evaluate('window.electronAPI.setHistoryLimit(100)')
     await evaluate('window.electronAPI.setPinned(' + JSON.stringify(favoriteId) + ',false)')
     assert.equal(await evaluate('(await window.electronAPI.getHistory()).historyLimit'), 100)
+    assert.equal(await evaluate('window.electronAPI.setHistoryLimit(1).then(()=>false,()=>true)'), true)
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).items.length'), 2)
     for (const invalid of ['0', '1.5', '10001', '"100"', 'null']) {
       assert.equal(await evaluate(`window.electronAPI.setHistoryLimit(${invalid}).then(()=>false,()=>true)`), true)
     }
+    await focusPicker()
     window.webContents.sendInputEvent({ type: 'keyDown', keyCode: ',', modifiers: ['control'] })
     window.webContents.sendInputEvent({ type: 'keyUp', keyCode: ',', modifiers: ['control'] })
-    await delay(100)
-    assert.equal(await evaluate('document.querySelector(".settings-dialog").open'), true)
+    await waitForRenderer('Boolean(document.querySelector(".settings-dialog")?.open)', 'Ctrl+, must open the settings dialog')
     assert.equal(await evaluate('document.querySelector("#history-limit").value'), '100')
+    await evaluate('document.querySelector("#history-limit").value="1"; document.querySelector("#history-limit").dispatchEvent(new Event("input",{bubbles:true}));')
+    await delay(650)
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).historyLimit'), 100)
+    await evaluate('document.querySelector(".review-history-limit").click()')
+    assert.equal(await evaluate('document.querySelector(".history-limit-confirm").open'), true)
+    assert.match(await evaluate('document.querySelector("#history-limit-description").textContent'), /максимум 1/)
+    await evaluate('document.querySelector(".cancel-history-limit").click()')
+    await evaluate('document.querySelector("#history-limit").value="100"; document.querySelector("#history-limit").dispatchEvent(new Event("input",{bubbles:true}));')
     assert.equal(await evaluate('document.querySelector("#time-format").value'), '24h')
     assert.equal(await evaluate('(await window.electronAPI.getHistory()).pasteOnSelect'), true)
+    const pasteAvailable = process.platform === 'win32'
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).pasteAvailable'), pasteAvailable)
+    assert.equal(await evaluate('document.querySelector("#paste-on-select").disabled'), !pasteAvailable)
     await evaluate('document.querySelector("#paste-on-select").click()')
     await delay(50)
-    assert.equal(await evaluate('(await window.electronAPI.getHistory()).pasteOnSelect'), false)
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).pasteOnSelect'), !pasteAvailable)
     for (const invalid of ['"false"', 'null', '0']) {
       assert.equal(await evaluate(`window.electronAPI.setPasteOnSelect(${invalid}).then(()=>false,()=>true)`), true)
     }
     await evaluate('window.electronAPI.setPasteOnSelect(true)')
+    assert.equal(await evaluate('document.querySelector("#promote-copied-records").checked'), true)
+    await evaluate('document.querySelector("#promote-copied-records").click()')
+    for (let attempt = 0; attempt < 10; attempt++) {
+      if (!await evaluate('(await window.electronAPI.getHistory()).promoteCopiedRecords')) break
+      await delay(25)
+    }
+    assert.equal(await evaluate('(await window.electronAPI.getHistory()).promoteCopiedRecords'), false)
+    await evaluate('window.electronAPI.setPromoteCopiedRecords(true)')
 
     await evaluate('document.querySelector("#time-format").value="12h"; document.querySelector("#time-format").dispatchEvent(new Event("change",{bubbles:true}));')
     await delay(50)
@@ -667,7 +722,16 @@ async function run() {
     process.env.CLIPCLIP_TEST_TEXT = ''
     await waitRecord('item => item.type === "file" && item.fileUris?.length === 2')
     const filesId = await evaluate('(await window.electronAPI.getHistory()).items.find(item => item.fileUris)?.id')
-    assert.equal((await evaluate('window.electronAPI.checkFiles(' + JSON.stringify(filesId) + ')')).status, 'available')
+    assert.deepEqual(await evaluate('(await window.electronAPI.getHistory()).items.find(item => item.id === ' + JSON.stringify(filesId) + ').fileKinds'), ['unknown', 'unknown'])
+    await evaluate('document.querySelector(".file-location").click()')
+    await evaluate('document.querySelector(".check-file-availability").click()')
+    for (let attempt = 0; attempt < 30; attempt++) {
+      if (await evaluate('document.querySelector(".file-actions [role=status]")?.textContent.includes("Выбранный путь доступен.")')) break
+      await delay(50)
+    }
+    assert.equal(await evaluate('document.querySelector(".file-actions [role=status]")?.textContent.trim()'), 'Выбранный путь доступен.')
+    assert.deepEqual(await evaluate('(await window.electronAPI.getHistory()).items.find(item => item.id === ' + JSON.stringify(filesId) + ').fileKinds'), ['file', 'unknown'])
+    await evaluate('document.querySelector(".close-file-actions").click()')
     assert.equal(await evaluate('window.electronAPI.copyItem(' + JSON.stringify(filesId) + ')'), undefined)
     app.emit('activate'); await delay(100)
     assert.deepEqual(await evaluate('(await window.electronAPI.getHistory()).items.find(item => item.id === ' + JSON.stringify(filesId) + ').fileKinds'), ['file', 'folder'])
@@ -727,6 +791,7 @@ async function run() {
     assert.deepEqual(revealedPaths, [archive, folder])
     assert.equal((await evaluate('window.electronAPI.revealFile(' + JSON.stringify(filesId) + ', 1)')).status, 'available')
     assert.equal((await evaluate('window.electronAPI.copyItem(' + JSON.stringify(filesId) + ')')).status, 'missing')
+    await focusPicker()
     await evaluate('document.getElementById(' + JSON.stringify('record-' + filesId) + ').click()')
     await delay(100)
     assert.equal(window.isVisible(), true)
@@ -814,6 +879,7 @@ async function run() {
     assert.equal(await evaluate('document.activeElement === document.querySelector(".color-swatch")'), true)
     nativeTheme.themeSource = 'light'
 
+    await focusPicker()
     await evaluate('document.querySelector(".record-select").click()')
     await delay(100)
     assert.equal(window.isVisible(), false)
@@ -873,6 +939,7 @@ async function run() {
     const backupPath = path.join(process.env.CLIPCLIP_TEST_USER_DATA, 'roundtrip.json')
     const originalSaveDialog = dialog.showSaveDialog
     const originalOpenDialog = dialog.showOpenDialog
+    const originalMessageBox = dialog.showMessageBox
     let exported
     try {
       dialog.showSaveDialog = async () => ({ canceled: false, filePath: backupPath })
@@ -949,6 +1016,31 @@ async function run() {
       }))
       await writeFile(backupPath, JSON.stringify({ ...exported, settings: { ...exported.settings, historyLimit: 100, paused: true }, history: groupedRecords }))
       assert.equal((await evaluate('window.electronAPI.importHistory(true)')).status, 'success')
+      const beforeReduction = await evaluate('window.electronAPI.getHistory()')
+      assert.equal(beforeReduction.items.length, 18)
+      await writeFile(backupPath, JSON.stringify({ ...exported, settings: { ...exported.settings, historyLimit: 1, paused: true, promoteCopiedRecords: false }, history: [] }))
+      dialog.showMessageBox = async (_window, options) => {
+        assert.match(options.detail, /17/)
+        assert.equal(options.defaultId, options.cancelId)
+        return { response: options.cancelId, checkboxChecked: false }
+      }
+      assert.equal((await evaluate('window.electronAPI.importHistory(true)')).status, 'cancelled')
+      assert.deepEqual(await evaluate('window.electronAPI.getHistory()'), beforeReduction)
+      let confirmations = 0
+      dialog.showMessageBox = async (_window, options) => {
+        confirmations++
+        assert.match(options.detail, confirmations === 1 ? /17/ : /18/)
+        if (confirmations === 1) await evaluate('window.electronAPI.saveTextRevision(null, "Synthetic record created during confirmation")')
+        return { response: 1, checkboxChecked: false }
+      }
+      assert.equal((await evaluate('window.electronAPI.importHistory(true)')).status, 'success')
+      assert.equal(confirmations, 2)
+      assert.deepEqual(await evaluate('(await window.electronAPI.getHistory()).items.map(item => item.data)'), ['Synthetic record created during confirmation'])
+      assert.equal(await evaluate('(await window.electronAPI.getHistory()).promoteCopiedRecords'), false)
+      await evaluate('window.electronAPI.clearHistory()')
+      await writeFile(backupPath, JSON.stringify({ ...exported, settings: { ...exported.settings, historyLimit: 100, paused: true }, history: groupedRecords }))
+      assert.equal((await evaluate('window.electronAPI.importHistory(true)')).status, 'success')
+      dialog.showMessageBox = originalMessageBox
       await evaluate('document.querySelector(".settings-dialog header button").click()'); await delay(50)
       assert.equal(await evaluate('document.querySelectorAll(".history-date-group").length'), 3)
       window.setSize(380, 420); await delay(50)
@@ -984,7 +1076,28 @@ async function run() {
       assert.equal(await evaluate('document.activeElement === document.querySelector("#history-search")'), true)
       await evaluate('document.querySelector(".date-filter-clear").click()')
       await evaluate('window.electronAPI.clearHistory()')
-    } finally { dialog.showOpenDialog = originalOpenDialog }
+      const largeHistory = Array.from({ length: 10_000 }, (_, index) => ({
+        id: 'virtual-fixture-' + index, type: 'text', data: 'Синтетическая большая история ' + index,
+        createdAt: new Date(2026, 10, 16 - Math.floor(index / 100), 18, 59 - (index % 100)).getTime(),
+        params: { type: 'text', size: '45 симв.', source: { name: 'Тест: приложение', title: '' }, tags: [] },
+      }))
+      await writeFile(backupPath, JSON.stringify({ ...exported, settings: { ...exported.settings, historyLimit: 10_000, paused: true }, history: largeHistory }))
+      assert.equal((await evaluate('window.electronAPI.importHistory(true)')).status, 'success')
+      assert.equal(await evaluate('(await window.electronAPI.getHistory()).items.length'), 10_000)
+      assert.ok(await evaluate('document.getElementById("record-virtual-fixture-0") !== null'))
+      assert.ok(await evaluate('document.querySelectorAll(".record-select").length < 150'), 'The long list must only mount a visible window of records')
+      for (let attempt = 0; attempt < 10; attempt++) {
+        await evaluate('const list = document.querySelector(".history-list"); list.scrollTop = list.scrollHeight;')
+        await delay(50)
+        if (await evaluate('document.getElementById("record-virtual-fixture-9999") !== null')) break
+      }
+      assert.ok(await evaluate('document.getElementById("record-virtual-fixture-9999") !== null'), 'Scrolling to the bottom must mount the last record')
+      assert.ok(await evaluate('document.querySelectorAll(".record-select").length < 150'))
+      await evaluate('const input = document.querySelector("#history-search"); input.value = "история 9876"; input.dispatchEvent(new Event("input", {bubbles: true}));')
+      assert.equal(await evaluate('document.querySelectorAll(".record-select").length'), 1)
+      assert.ok(await evaluate('document.getElementById("record-virtual-fixture-9876") !== null'))
+      await evaluate('window.electronAPI.clearHistory()')
+    } finally { dialog.showOpenDialog = originalOpenDialog; dialog.showMessageBox = originalMessageBox }
     console.log('Electron smoke test passed: isolated clipboard, documents/links, bilingual tags, full-card highlight, IPC, same-type preview navigation, fixed preview dimensions, compact zoom, mouse panning, fullscreen and window controls.')
     app.quit()
   } catch (error) {
