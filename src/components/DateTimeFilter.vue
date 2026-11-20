@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import { mdiCalendarClockOutline, mdiCalendarOutline, mdiClockOutline, mdiClose } from '@mdi/js'
 import AppIcon from './AppIcon.vue'
 import DateTimePickerDialog from './DateTimePickerDialog.vue'
-import { dateFilterError, dateTimeFilterLabel, emptyDateTimeFilter, hasDateTimeFilter, localDateKey, type DateTimeFilter } from '../utils/dateFilter'
+import { dateFilterError, dateTimeFilterLabel, emptyDateTimeFilter, hasDateTimeFilter, localDateKey, MAX_FILTER_DATE, MIN_FILTER_DATE, type DateTimeFilter } from '../utils/dateFilter'
 
 const props = defineProps<{ modelValue: DateTimeFilter; resultCount: number }>()
 const emit = defineEmits<{ 'update:modelValue': [value: DateTimeFilter] }>()
@@ -60,6 +60,7 @@ onBeforeUnmount(() => dialog.value?.close())
           <label :for="`filter-${field.key}`" class="mb-1 block">{{ field.label }}</label>
           <span class="flex min-h-10 min-w-0 items-stretch overflow-hidden rounded-lg border border-line bg-canvas focus-within:border-accent focus-within:ring-2 focus-within:ring-accent/15">
             <input :id="`filter-${field.key}`" :type="field.type" :value="modelValue[field.key]" :step="field.type === 'time' ? 60 : undefined"
+              :min="field.type === 'date' ? MIN_FILTER_DATE : undefined" :max="field.type === 'date' ? MAX_FILTER_DATE : undefined"
               class="date-time-input w-full min-w-0 flex-1 bg-transparent px-2 text-[13px] text-ink tabular-nums outline-none"
               :aria-invalid="field.type === 'date' && !!error" :aria-describedby="error && field.type === 'date' ? 'date-filter-error' : 'date-filter-help'"
               @input="update(field.key, $event)" />

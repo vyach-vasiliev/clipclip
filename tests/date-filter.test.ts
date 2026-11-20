@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { dateFilterError, emptyDateTimeFilter, matchesDateTime } from '../src/utils/dateFilter'
+import { dateFilterError, dateTimeFilterLabel, emptyDateTimeFilter, matchesDateTime, parseFilterDate } from '../src/utils/dateFilter'
 
 const stamp = (day: number, hour = 12, minute = 0, second = 0) => new Date(2026, 10, day, hour, minute, second).getTime()
 describe('local date and time filtering', () => {
@@ -23,5 +23,24 @@ describe('local date and time filtering', () => {
     expect(matchesDateTime(stamp(15), reversed)).toBe(false)
     expect(matchesDateTime(NaN, { ...emptyDateTimeFilter(), timeFrom: '01:00' })).toBe(false)
     expect(matchesDateTime(stamp(15), emptyDateTimeFilter())).toBe(true)
+  })
+  it.each(['10000-01-01', '0000-12-31', '2026-02-29', '2026-04-31', '2026-13-01'])('rejects invalid calendar date %s without throwing during formatting', dateFrom => {
+    const filter = { ...emptyDateTimeFilter(), dateFrom }
+    expect(parseFilterDate(dateFrom)).toBeNull()
+    expect(dateFilterError(filter)).toContain('корректную дату')
+    expect(dateTimeFilterLabel(filter)).toBe('Некорректная дата')
+    expect(matchesDateTime(stamp(15), filter)).toBe(false)
+  })
+  it('filters early four-digit year spellings and compares boundaries in chronological order', () => {
+    expect(parseFilterDate('0004-02-29')?.toISOString()).toBe('0004-02-29T00:00:00.000Z')
+    expect(parseFilterDate('0100-02-29')).toBeNull()
+    const early = new Date(0)
+    early.setFullYear(1, 0, 1)
+    const future = new Date(0)
+    future.setFullYear(10000, 0, 1)
+    const filter = { ...emptyDateTimeFilter(), dateFrom: '0001-01-01', dateTo: '9999-12-31' }
+    expect(dateFilterError(filter)).toBe('')
+    expect(matchesDateTime(early.getTime(), filter)).toBe(true)
+    expect(matchesDateTime(future.getTime(), filter)).toBe(false)
   })
 })

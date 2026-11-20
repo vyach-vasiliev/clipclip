@@ -2,27 +2,40 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { mdiChevronLeft, mdiChevronRight, mdiClose } from '@mdi/js'
 import AppIcon from './AppIcon.vue'
-import { localDateKey } from '../utils/dateFilter'
+import { localDateKey, MAX_FILTER_DATE, MIN_FILTER_DATE, parseFilterDate } from '../utils/dateFilter'
 
 const props = defineProps<{ type: 'date' | 'time'; label: string; modelValue: string }>()
 const emit = defineEmits<{ select: [value: string]; close: [] }>()
 const dialog = ref<HTMLDialogElement>()
-const initial = props.type === 'date' && props.modelValue ? new Date(`${props.modelValue}T12:00:00`) : new Date()
-const cursor = ref(Number.isFinite(initial.getTime()) ? initial : new Date())
-const month = ref(new Date(cursor.value.getFullYear(), cursor.value.getMonth(), 1))
 const today = localDateKey(new Date())
-const monthLabel = computed(() => new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric' }).format(month.value))
+const minYear = Number(MIN_FILTER_DATE.slice(0, 4))
+const maxYear = Number(MAX_FILTER_DATE.slice(0, 4))
+const dayFormatter = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
+const monthFormatter = new Intl.DateTimeFormat('ru-RU', { month: 'long', year: 'numeric', timeZone: 'UTC' })
+function calendarDate(year: number, month: number, day = 1) {
+  const result = new Date(0)
+  result.setUTCFullYear(year, month, day)
+  return result
+}
+const dayKey = (date: Date) => date.toISOString().split('T')[0]
+const validYear = (year: number) => year >= minYear && year <= maxYear
+const initial = props.type === 'date' ? parseFilterDate(props.modelValue) : null
+const cursor = ref(initial ?? parseFilterDate(today) ?? calendarDate(minYear, 0))
+const month = ref(calendarDate(cursor.value.getUTCFullYear(), cursor.value.getUTCMonth()))
+const monthLabel = computed(() => monthFormatter.format(month.value))
 const calendarView = ref<'days' | 'months' | 'years'>('days')
-const yearStart = ref(Math.floor(month.value.getFullYear() / 12) * 12)
-const months = Array.from({ length: 12 }, (_, index) => new Intl.DateTimeFormat('ru-RU', { month: 'long' }).format(new Date(2026, index, 1)))
+const yearStart = ref(Math.floor(month.value.getUTCFullYear() / 12) * 12)
+const yearRange = computed(() => `${Math.max(yearStart.value, minYear)}–${Math.min(yearStart.value + 11, maxYear)}`)
+const monthNameFormatter = new Intl.DateTimeFormat('ru-RU', { month: 'long', timeZone: 'UTC' })
+const months = Array.from({ length: 12 }, (_, index) => monthNameFormatter.format(calendarDate(2000, index)))
 const years = computed(() => Array.from({ length: 12 }, (_, index) => yearStart.value + index))
-const displayedMonth = computed(() => months[month.value.getMonth()])
+const displayedMonth = computed(() => months[month.value.getUTCMonth()])
 const days = computed(() => {
-  const offset = (month.value.getDay() + 6) % 7
+  const offset = (month.value.getUTCDay() + 6) % 7
   return Array.from({ length: 42 }, (_, index) => {
-    const date = new Date(month.value.getFullYear(), month.value.getMonth(), index - offset + 1, 12)
-    return { date, value: localDateKey(date), label: date.getDate(), outside: date.getMonth() !== month.value.getMonth(),
-      fullLabel: new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(date) }
+    const date = calendarDate(month.value.getUTCFullYear(), month.value.getUTCMonth(), index - offset + 1)
+    return { date, value: dayKey(date), label: date.getUTCDate(), outside: date.getUTCMonth() !== month.value.getUTCMonth(),
+      disabled: !validYear(date.getUTCFullYear()), fullLabel: dayFormatter.format(date) }
   })
 })
 const hour = ref(Number(props.modelValue.split(':')[0]) || 0)
@@ -37,44 +50,54 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 function select(value: string) { emit('select', value); close() }
+function adjacentMonth(delta: number) {
+  return calendarView.value === 'months'
+    ? calendarDate(month.value.getUTCFullYear() + delta, month.value.getUTCMonth())
+    : calendarDate(month.value.getUTCFullYear(), month.value.getUTCMonth() + delta)
+}
+function canMoveMonth(delta: number) {
+  if (calendarView.value !== 'years') return validYear(adjacentMonth(delta).getUTCFullYear())
+  const start = yearStart.value + delta * 12
+  return start <= maxYear && start + 11 >= minYear
+}
 function moveMonth(delta: number) {
+  if (!canMoveMonth(delta)) return
   if (calendarView.value === 'years') { yearStart.value += delta * 12; return }
-  if (calendarView.value === 'months') {
-    month.value = new Date(month.value.getFullYear() + delta, month.value.getMonth(), 1)
-    cursor.value = new Date(month.value)
-    return
-  }
-  month.value = new Date(month.value.getFullYear(), month.value.getMonth() + delta, 1)
-  cursor.value = new Date(month.value)
+  cursor.value = month.value = adjacentMonth(delta)
 }
 function toggleYearSelection() {
   if (calendarView.value === 'years') { calendarView.value = 'days'; return }
-  yearStart.value = Math.floor(month.value.getFullYear() / 12) * 12
+  yearStart.value = Math.floor(month.value.getUTCFullYear() / 12) * 12
   calendarView.value = 'years'
 }
 async function chooseYear(year: number) {
-  month.value = new Date(year, month.value.getMonth(), 1)
-  cursor.value = new Date(month.value)
+  if (!validYear(year)) return
+  cursor.value = month.value = calendarDate(year, month.value.getUTCMonth())
   calendarView.value = 'months'
   await nextTick()
   dialog.value?.querySelector<HTMLButtonElement>('.calendar-month[aria-pressed="true"]')?.focus()
 }
 async function chooseMonth(index: number) {
-  month.value = new Date(month.value.getFullYear(), index, 1)
-  cursor.value = new Date(month.value)
+  cursor.value = month.value = calendarDate(month.value.getUTCFullYear(), index)
   calendarView.value = 'days'
   await nextTick()
-  dialog.value?.querySelector<HTMLButtonElement>(`[data-day="${localDateKey(cursor.value)}"]`)?.focus()
+  focusCalendarCursor()
+}
+function focusCalendarCursor() {
+  dialog.value?.querySelector<HTMLButtonElement>(`[data-day="${dayKey(cursor.value)}"]`)?.focus()
 }
 async function moveDate(event: KeyboardEvent) {
+  const weekDay = (cursor.value.getUTCDay() + 6) % 7
   const offsets: Record<string, number> = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7,
-    Home: -(cursor.value.getDay() + 6) % 7, End: 6 - (cursor.value.getDay() + 6) % 7 }
+    Home: -weekDay, End: 6 - weekDay }
   if (!(event.key in offsets)) return
   event.preventDefault()
-  cursor.value = new Date(cursor.value.getFullYear(), cursor.value.getMonth(), cursor.value.getDate() + offsets[event.key], 12)
-  month.value = new Date(cursor.value.getFullYear(), cursor.value.getMonth(), 1)
+  const target = calendarDate(cursor.value.getUTCFullYear(), cursor.value.getUTCMonth(), cursor.value.getUTCDate() + offsets[event.key])
+  if (!validYear(target.getUTCFullYear())) return
+  cursor.value = target
+  month.value = calendarDate(target.getUTCFullYear(), target.getUTCMonth())
   await nextTick()
-  dialog.value?.querySelector<HTMLButtonElement>(`[data-day="${localDateKey(cursor.value)}"]`)?.focus()
+  focusCalendarCursor()
 }
 async function scrollTime() {
   await nextTick()
@@ -96,7 +119,7 @@ function moveTime(event: KeyboardEvent, part: 'hour' | 'minute') {
 onMounted(async () => {
   dialog.value?.showModal()
   if (props.type === 'time') await scrollTime()
-  else dialog.value?.querySelector<HTMLButtonElement>(`[data-day="${localDateKey(cursor.value)}"]`)?.focus()
+  else focusCalendarCursor()
 })
 onBeforeUnmount(() => dialog.value?.close())
 </script>
@@ -110,30 +133,30 @@ onBeforeUnmount(() => dialog.value?.close())
     </header>
     <template v-if="type === 'date'">
       <div class="mb-2 flex items-center justify-between gap-2">
-        <button type="button" class="picker-prev icon-button" :aria-label="calendarView === 'years' ? 'Предыдущие 12 лет' : calendarView === 'months' ? 'Предыдущий год' : 'Предыдущий месяц'" @click="moveMonth(-1)"><AppIcon :path="mdiChevronLeft" /></button>
+        <button type="button" class="picker-prev icon-button" :aria-label="calendarView === 'years' ? 'Предыдущие 12 лет' : calendarView === 'months' ? 'Предыдущий год' : 'Предыдущий месяц'" :disabled="!canMoveMonth(-1)" @click="moveMonth(-1)"><AppIcon :path="mdiChevronLeft" /></button>
         <div class="flex min-w-0 items-center gap-0.5">
           <button type="button" class="picker-month-toggle text-button min-w-0 capitalize" aria-label="Выбрать месяц" :aria-expanded="calendarView === 'months'" aria-controls="calendar-choices"
             @click="calendarView = calendarView === 'months' ? 'days' : 'months'">{{ displayedMonth }}</button>
-          <button type="button" class="picker-year-toggle text-button tabular-nums" aria-label="Выбрать год" :aria-expanded="calendarView === 'years'" aria-controls="calendar-choices" @click="toggleYearSelection">{{ calendarView === 'years' ? `${yearStart}–${yearStart + 11}` : month.getFullYear() }}</button>
+          <button type="button" class="picker-year-toggle text-button tabular-nums" aria-label="Выбрать год" :aria-expanded="calendarView === 'years'" aria-controls="calendar-choices" @click="toggleYearSelection">{{ calendarView === 'years' ? yearRange : month.getUTCFullYear() }}</button>
         </div>
-        <button type="button" class="picker-next icon-button" :aria-label="calendarView === 'years' ? 'Следующие 12 лет' : calendarView === 'months' ? 'Следующий год' : 'Следующий месяц'" @click="moveMonth(1)"><AppIcon :path="mdiChevronRight" /></button>
+        <button type="button" class="picker-next icon-button" :aria-label="calendarView === 'years' ? 'Следующие 12 лет' : calendarView === 'months' ? 'Следующий год' : 'Следующий месяц'" :disabled="!canMoveMonth(1)" @click="moveMonth(1)"><AppIcon :path="mdiChevronRight" /></button>
       </div>
-      <p class="sr-only" aria-live="polite">{{ calendarView === 'years' ? `Выбор года: ${yearStart}–${yearStart + 11}` : calendarView === 'months' ? `Выбор месяца: ${month.getFullYear()}` : monthLabel }}</p>
+      <p class="sr-only" aria-live="polite">{{ calendarView === 'years' ? `Выбор года: ${yearRange}` : calendarView === 'months' ? `Выбор месяца: ${month.getUTCFullYear()}` : monthLabel }}</p>
       <div id="calendar-choices" class="min-h-68">
       <div v-if="calendarView === 'days'" class="grid grid-cols-7 text-center">
         <span v-for="day in ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']" :key="day" class="py-2 text-[11px] text-muted" aria-hidden="true">{{ day }}</span>
-        <button v-for="day in days" :key="day.value" type="button" :data-day="day.value" class="calendar-day min-h-10 min-w-0 rounded-lg text-xs tabular-nums"
+        <button v-for="day in days" :key="day.value" type="button" :data-day="day.value" :disabled="day.disabled" class="calendar-day min-h-10 min-w-0 rounded-lg text-xs tabular-nums disabled:opacity-30"
           :class="[day.value === modelValue ? 'bg-accent text-surface hover:bg-accent' : day.outside ? 'text-muted/60 hover:bg-accent/10' : 'text-ink hover:bg-accent/10', day.value === today && day.value !== modelValue ? 'ring-1 ring-accent/40 ring-inset' : '']"
-          :aria-label="day.fullLabel" :aria-pressed="day.value === modelValue" :aria-current="day.value === today ? 'date' : undefined" :tabindex="day.value === localDateKey(cursor) ? 0 : -1"
+          :aria-label="day.fullLabel" :aria-pressed="day.value === modelValue" :aria-current="day.value === today ? 'date' : undefined" :tabindex="!day.disabled && day.value === dayKey(cursor) ? 0 : -1"
           @focus="cursor = day.date" @keydown="moveDate" @click="select(day.value)">{{ day.label }}</button>
       </div>
       <div v-else-if="calendarView === 'months'" class="grid grid-cols-3 gap-1" aria-label="Месяцы">
         <button v-for="(label, index) in months" :key="label" type="button" :data-month="index" class="calendar-month min-h-14 rounded-lg px-1 text-xs capitalize"
-          :class="index === month.getMonth() ? 'bg-accent/15 font-semibold text-accent' : 'text-ink hover:bg-accent/10'" :aria-pressed="index === month.getMonth()" @click="chooseMonth(index)">{{ label }}</button>
+          :class="index === month.getUTCMonth() ? 'bg-accent/15 font-semibold text-accent' : 'text-ink hover:bg-accent/10'" :aria-pressed="index === month.getUTCMonth()" @click="chooseMonth(index)">{{ label }}</button>
       </div>
       <div v-else class="grid grid-cols-3 gap-1" aria-label="Годы">
-        <button v-for="year in years" :key="year" type="button" :data-year="year" class="calendar-year min-h-14 rounded-lg px-1 text-xs tabular-nums"
-          :class="year === month.getFullYear() ? 'bg-accent/15 font-semibold text-accent' : 'text-ink hover:bg-accent/10'" :aria-pressed="year === month.getFullYear()" @click="chooseYear(year)">{{ year }}</button>
+        <button v-for="year in years" :key="year" type="button" :data-year="year" :disabled="!validYear(year)" class="calendar-year min-h-14 rounded-lg px-1 text-xs tabular-nums disabled:opacity-30"
+          :class="year === month.getUTCFullYear() ? 'bg-accent/15 font-semibold text-accent' : 'text-ink hover:bg-accent/10'" :aria-pressed="year === month.getUTCFullYear()" @click="chooseYear(year)">{{ year }}</button>
       </div>
       </div>
       <footer class="mt-2 flex justify-between border-t border-line pt-2">

@@ -91,6 +91,33 @@ describe('date and time search', () => {
     { ...item('morning'), createdAt: new Date(2026, 10, 15, 8).getTime() },
     { ...item('yesterday'), createdAt: new Date(2026, 10, 14, 14, 30).getTime(), pinned: true },
   ]
+  it('keeps the date filter usable after an out-of-range year and bounds the calendar', async () => {
+    const { wrapper } = await setup(records())
+    await wrapper.get('.date-filter-toggle').trigger('click')
+    const input = wrapper.get<HTMLInputElement>('#filter-dateFrom')
+    expect(input.attributes('min')).toBe('0001-01-01')
+    expect(input.attributes('max')).toBe('9999-12-31')
+    await input.setValue('20266-11-19')
+    expect(wrapper.get('#date-filter-error').text()).toContain('0001 до 9999')
+    expect(wrapper.get('.active-date-filter').text()).toBe('Некорректная дата')
+    expect(wrapper.get<HTMLButtonElement>('.date-filter-show').element.disabled).toBe(true)
+
+    await wrapper.get('[data-picker="dateFrom"]').trigger('click')
+    expect(wrapper.findAll('.calendar-day')).toHaveLength(42)
+    await wrapper.get('.date-time-picker').trigger('cancel')
+    await input.setValue('9999-12-31')
+    expect(wrapper.find('#date-filter-error').exists()).toBe(false)
+    await wrapper.get('[data-picker="dateFrom"]').trigger('click')
+    expect(wrapper.get<HTMLButtonElement>('.picker-next').element.disabled).toBe(true)
+    expect(wrapper.get<HTMLButtonElement>('[data-day="+010000-01-01"]').element.disabled).toBe(true)
+    const endOfRange = wrapper.get<HTMLButtonElement>('[data-day="9999-12-31"]')
+    expect(endOfRange.element.disabled).toBe(false)
+    await endOfRange.trigger('keydown', { key: 'ArrowRight' })
+    expect(endOfRange.attributes('tabindex')).toBe('0')
+    await endOfRange.trigger('click')
+    expect(input.element.value).toBe('9999-12-31')
+    expect(wrapper.find('.date-time-picker').exists()).toBe(false)
+  })
   it('places favorite dates before their times and omits favorite date separators', async () => {
     const values = records(); values[0].pinned = true
     const { wrapper } = await setup(values)
