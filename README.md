@@ -1,6 +1,6 @@
 <p align="center"><img src="assets/readme/clipclip.png" width="56" height="56" alt="ClipClip icon"></p>
 <h1 align="center">ClipClip</h1>
-<p align="center"><strong>English</strong> · <a href="README.ru.md" lang="ru">Русский</a></p>
+<p align="center"><strong>English</strong> · <a href="README.ru.md" hreflang="ru">Russian</a></p>
 <p align="center">Clipboard history with search, favorites, and keyboard shortcuts.<br>Keep text, links, images, and file paths on your device and paste them again when you need them.</p>
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
@@ -23,11 +23,11 @@
 2. On first install, **Start ClipClip automatically when signing in to Windows** is selected by default. Clear the checkbox if you prefer to start the app manually.
 3. Copy something in any app and press **Ctrl + Alt + B**. Type to search, choose an entry with the arrow keys, and press **Enter**. On Windows, with automatic paste enabled, ClipClip returns focus to the previous window and pastes the entry. If automatic paste is unavailable, the entry stays on the clipboard.
 
-When startup is enabled, ClipClip appears in the system tray at sign-in. You can turn it off in **Settings → Apps → Startup**. Updates preserve your choice. The × button hides the window while ClipClip continues recording. To close the app, select **Exit** (**Выход**) from the tray menu.
+When startup is enabled, ClipClip appears in the system tray at sign-in. You can turn it off in **Settings → Apps → Startup**. Updates preserve your choice. The × button hides the window while ClipClip continues recording. To close the app, select **Exit** from the tray menu.
 
 ## Features
 
-- **Search and filters.** Search by text, source app, entry type, or `#tag`. Narrow results by date, time, or favorites. Search recognizes both Russian and English terms, such as `#текст` and `#text`.
+- **Search and filters.** Search by text, source app, entry type, or `#tag`. Narrow results by date, time, or favorites. Search recognizes both Russian and English terms.
 - **Favorites and history.** Star an entry to pin it at the top. The newest entry is selected and the search field gets focus when you open ClipClip. You can move copied entries to the top automatically and pause clipboard recording.
 - **Preview and edit.** Browse entries of the same type in compact or full-screen preview. Zoom and pan images, edit text with autosaved revisions, or restore the original. Select a tag in preview to filter the history.
 - **Files and colors.** Check whether a file is available, copy its path, or show it in File Explorer. Convert and copy recognized colors in another format.
@@ -45,7 +45,7 @@ When startup is enabled, ClipClip appears in the system tray at sign-in. You can
 | Pause or resume recording | <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd> |
 | Clear the search and filters, then hide the window | <kbd>Esc</kbd> |
 
-Change shortcuts in the **Keyboard shortcuts** (**Горячие клавиши**) tab. On Windows, the default shortcut uses the physical **B/И** key. In preview, **Ctrl + F** toggles full screen and **Esc** returns to compact view. Use **Ctrl + scroll** to zoom an image.
+Change shortcuts in the **Keyboard shortcuts** tab. On Windows, the default shortcut uses the physical **B** key regardless of keyboard layout. In preview, **Ctrl + F** toggles full screen and **Esc** returns to compact view. Use **Ctrl + scroll** to zoom an image.
 
 ## Storage and backups
 
@@ -63,7 +63,7 @@ On Windows, the app you copy from can mark an individual item to keep it out of 
 
 Favorites count toward the total storage limit and have no effect on the regular entry count. You can undo individual deletions for 10 seconds. **Clear all history** removes every entry, including favorites, after confirmation.
 
-In **Settings → General** (**Настройки → Основные**), you can export history, favorites, and settings as unencrypted JSON. The export stores images as PNG data URLs and files and folders as paths. Import merges entries by content and lets you choose whether to apply settings from the file. If the merge would remove any existing entries, ClipClip asks for confirmation. Import and export preserve the current contents of the system clipboard.
+In **Settings → General**, you can export history, favorites, and settings as unencrypted JSON. The export stores images as PNG data URLs and files and folders as paths. Import merges entries by content and lets you choose whether to apply settings from the file. If the merge would remove any existing entries, ClipClip asks for confirmation. Import and export preserve the current contents of the system clipboard.
 
 <details>
 <summary>Backup format and source detection</summary>
@@ -141,4 +141,4 @@ For tests, you can create a self-signed certificate of type `CodeSigningCert`. C
 
 ## License
 
-ClipClip is developed by Vasilev Viacheslav and distributed under the [MIT License](LICENSE). Copyright © 2026 ClipClip. Component licenses are available in the app's **About** (**О программе**) tab. See [AGENTS.md](AGENTS.md) for repository guidelines.
+ClipClip is developed by Vasilev Viacheslav and distributed under the [MIT License](LICENSE). Copyright © 2026 ClipClip. Component licenses are available in the app's **About** tab. See [AGENTS.md](AGENTS.md) for repository guidelines.
