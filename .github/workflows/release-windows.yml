@@ -1,0 +1,97 @@
+name: Release Windows installer
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-windows-${{ github.ref }}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Verify tag matches package version
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -cne "v$version") {
+            throw "Tag $env:GITHUB_REF_NAME must match package.json version $version."
+          }
+      - run: npm ci
+      - run: npm test
+      - name: Build NSIS installer and update metadata
+        shell: pwsh
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          $owner, $repository = $env:GITHUB_REPOSITORY -split '/', 2
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $installer = "ClipClip-Windows-$version-Setup.exe"
+          npm run build:win -- "--config.win.publish.provider=github" "--config.win.publish.owner=$owner" "--config.win.publish.repo=$repository" "--config.win.artifactName=$installer"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($name in @($installer, "$installer.blockmap", 'latest.yml')) {
+            if (!(Test-Path -LiteralPath "release/$version/$name" -PathType Leaf)) {
+              throw "Build is missing $name."
+            }
+          }
+          "CLIPCLIP_RELEASE_DIR=release/$version" >> $env:GITHUB_ENV
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-release
+          path: |
+            ${{ env.CLIPCLIP_RELEASE_DIR }}/ClipClip-Windows-*-Setup.exe
+            ${{ env.CLIPCLIP_RELEASE_DIR }}/ClipClip-Windows-*-Setup.exe.blockmap
+            ${{ env.CLIPCLIP_RELEASE_DIR }}/latest.yml
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: windows-release
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          tag="$GITHUB_REF_NAME"
+          installer="ClipClip-Windows-${tag#v}-Setup.exe"
+          assets=("$installer" "$installer.blockmap" latest.yml)
+
+          if release=$(gh release view "$tag" --json isDraft,isPrerelease,assets); then
+            if jq -e '.isDraft' <<< "$release" > /dev/null; then
+              gh release upload "$tag" "${assets[@]}" --clobber
+              gh release edit "$tag" --draft=false --prerelease=false
+            else
+              if jq -e '.isPrerelease' <<< "$release" > /dev/null; then
+                echo "Release $tag was published as a prerelease." >&2
+                exit 1
+              fi
+              for asset in "${assets[@]}"; do
+                if ! jq -e --arg name "$asset" '.assets | any(.name == $name)' <<< "$release" > /dev/null; then
+                  echo "Published release $tag is missing $asset." >&2
+                  exit 1
+                fi
+              done
+            fi
+          else
+            gh release create "$tag" "${assets[@]}" --verify-tag --title "$tag" --generate-notes
+          fi

@@ -15,8 +15,11 @@ delete environment.CLIPCLIP_TEST_PASTE_TARGET_PID
 delete environment.ELECTRON_RUN_AS_NODE
 if (process.env.CLIPCLIP_TEST_DEV_SERVER) environment.VITE_DEV_SERVER_URL = process.env.CLIPCLIP_TEST_DEV_SERVER
 else delete environment.VITE_DEV_SERVER_URL
-const child = spawn(electron, ['--disable-gpu', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', path.join(root, 'scripts/electron-smoke-driver.mjs')], {
-  cwd: root, env: environment, stdio: 'inherit', windowsHide: true,
+const hiddenStartup = process.platform === 'win32' && process.argv.includes('--hidden')
+const launchArgs = hiddenStartup ? ['--hidden'] : []
+const child = spawn(electron, ['--disable-gpu', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding', path.join(root, 'scripts/electron-smoke-driver.mjs'), ...launchArgs], {
+  // Simulate the Startup folder shortcut without overriding the first ShowWindow call.
+  cwd: root, env: environment, stdio: 'inherit', windowsHide: !hiddenStartup,
 })
 const timeout = setTimeout(() => { console.error('Electron smoke test timed out'); child.kill(); }, 60_000)
 child.once('error', error => { clearTimeout(timeout); console.error(error.message); process.exitCode = 1 })

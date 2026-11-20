@@ -19,6 +19,7 @@ import { createWindowsQuickPickKeys } from './windowsQuickPick'
 import { createWindowsClipboardAccess, readAllowedClipboard, type WindowsClipboardAccess } from './windowsClipboard'
 import { encodedImageDimensions, exceedsImagePixelLimit, type EncodedImageFormat } from './imageDimensions'
 import { decodeDib } from './windowsBitmap'
+import { startWindowsUpdates } from './updates'
 import { version as appVersion } from '../../package.json'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
@@ -33,6 +34,7 @@ if (process.platform === 'win32') app.setAppUserModelId('ClipClipManager2025')
 
 let win: BrowserWindow | null = null
 let readyWindow: BrowserWindow | null = null
+let showWindowOnReady = false
 let initialized = false
 let tray: Tray | null = null
 let quitting = false
@@ -778,7 +780,10 @@ function showWindow() {
     createWindow()
     return
   }
-  if (readyWindow !== win) return
+  if (readyWindow !== win) {
+    showWindowOnReady = true
+    return
+  }
   windowsPaste?.capture()
   visibilityGeneration++
   if (win.isAlwaysOnTop()) win.setAlwaysOnTop(false)
@@ -789,8 +794,9 @@ function showWindow() {
   win.webContents.send(CHANNELS.windowShown)
 }
 
-function createWindow() {
+function createWindow(showOnReady = true) {
   if (win && !win.isDestroyed()) return
+  showWindowOnReady = showOnReady
   win = new BrowserWindow({
     title: 'ClipClip Manager', width: 460, height: 560, minWidth: 380, minHeight: 420,
     show: false, icon, autoHideMenuBar: true, frame: process.platform !== 'win32', skipTaskbar: process.platform === 'win32',
@@ -850,7 +856,7 @@ function createWindow() {
   created.once('ready-to-show', () => {
     if (win !== created || created.isDestroyed()) return
     readyWindow = created
-    showWindow()
+    if (showWindowOnReady) showWindow()
   })
   created.on('close', event => {
     if (!quitting && process.platform !== 'darwin' && tray) {
@@ -921,21 +927,28 @@ async function initialize() {
   }
   registerIpc()
   if (!testMode || process.env.CLIPCLIP_TEST_TRAY === '1') {
-    const trayImage = nativeImage.createFromPath(icon)
+    const windowsTray = process.platform === 'win32'
+    const trayImage = nativeImage.createFromPath(windowsTray
+      ? path.join(path.dirname(icon), 'clipclip-tray.ico')
+      : icon)
     if (!trayImage.isEmpty()) try {
-      tray = new Tray(trayImage.resize({ width: 20, height: 20 }))
+      tray = new Tray(windowsTray ? trayImage : trayImage.resize({ width: 20, height: 20 }))
       tray.on('click', toggleTrayWindow)
       updateTray()
       if (testMode) app.emit('clipclip:test:tray-created', tray)
     } catch { tray = null }
   }
   initialized = true
-  showWindow()
+  if (process.platform === 'win32' && tray && process.argv.includes('--hidden')) createWindow(false)
+  else showWindow()
   monitor.start()
+  void startWindowsUpdates().catch(() => console.warn('ClipClip could not start the updater.'))
 }
 
 void app.whenReady().then(initialize).catch(() => { console.error('ClipClip could not start.'); app.quit() })
-app.on('second-instance', showWindow)
+app.on('second-instance', (_event, argv) => {
+  if (process.platform !== 'win32' || !argv?.includes('--hidden')) showWindow()
+})
 app.on('activate', showWindow)
 if (testMode && process.env.CLIPCLIP_TEST_PASTE === '1') {
   (app as NodeJS.EventEmitter).on('clipclip:test:open-quick-pick', showFromShortcut)

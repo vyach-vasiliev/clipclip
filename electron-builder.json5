@@ -6,6 +6,8 @@
   // get-windows ships N-API binaries, independent of Electron's Node ABI.
   "npmRebuild": false,
   "productName": "ClipClip Manager",
+  // The Windows release workflow supplies its own GitHub repository.
+  "publish": null,
   "directories": {
     "output": "release/${version}"
   },
@@ -32,6 +34,7 @@
     "artifactName": "${productName}-Windows-${version}-Setup.${ext}"
   },
   "nsis": {
+    "include": "build/installer.nsh",
     "oneClick": false,
     "perMachine": false,
     "allowToChangeInstallationDirectory": true,

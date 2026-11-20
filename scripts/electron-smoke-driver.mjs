@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { writeFile, readFile, mkdir, unlink } from 'node:fs/promises'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
+import pkg from '../package.json' with { type: 'json' }
 import '../dist-electron/main/index.js'
 import { checkWindowsShortcut } from './windows-shortcut-check.mjs'
 import { checkWindowsPaste } from './windows-paste-check.mjs'
@@ -65,6 +66,19 @@ async function run() {
     assert.equal(checkedStartup, true)
     assert.deepEqual(BrowserWindow.getAllWindows(), [window])
     assert.deepEqual(window.getSize(), [460, 560])
+    if (process.platform === 'win32' && process.argv.includes('--hidden')) {
+      assert.ok(fixtureTray, 'Launching at login must create the tray icon')
+      assert.equal(window.isVisible(), false, 'Launching at login must keep the window hidden')
+      app.emit('second-instance', {}, ['--hidden'])
+      assert.equal(window.isVisible(), false, 'A second login launch must keep the window hidden')
+      const shown = new Promise(resolve => window.once('show', resolve))
+      fixtureTray.emit('click')
+      await shown
+      assert.equal(window.isVisible(), true, 'The tray must open the window after login startup')
+      console.log('Electron smoke test passed: hidden Windows login startup and tray reopen.')
+      app.quit()
+      return
+    }
     const evaluate = async code => {
       try { return await window.webContents.executeJavaScript('(async () => { ' + (code.includes(';') ? code : 'return (' + code + ')') + ' })()') }
       catch (error) { throw new Error('Renderer check failed: ' + code, { cause: error }) }
@@ -363,7 +377,7 @@ async function run() {
     await delay(50)
     assert.ok(await evaluate('document.querySelector(".license-disclosure .license-text").textContent.includes("Copyright (c) 2026 Vasilev Viacheslav")'))
     await screenshot(window, 'settings-license.png')
-    assert.equal(await evaluate('document.querySelectorAll("#settings-about .license-disclosure").length'), 10)
+    assert.ok(await evaluate('Array.from(document.querySelectorAll("#settings-about .license-link")).some(summary => summary.textContent.startsWith("electron-updater "))'))
     assert.equal(await evaluate('Boolean(document.querySelector(".electron-notices"))'), false)
     await evaluate('document.querySelector(".license-disclosure").open=false; document.querySelector("#settings-about").scrollTop=0;')
     nativeTheme.themeSource = 'dark'
@@ -948,7 +962,7 @@ async function run() {
       exported = JSON.parse(text)
       assert.equal(exported.format, 'clipclip-backup')
       assert.equal(exported.manifestVersion, 1)
-      assert.equal(exported.appVersion, '2.0.0')
+      assert.equal(exported.appVersion, pkg.version)
       assert.ok(exported.history.some(item => item.pinned))
       assert.ok(text.includes(JSON.stringify(exported.history.find(item => item.type !== 'image').data)))
       assert.ok(await evaluate('document.querySelector(".settings-notice").textContent.includes("экспортированы в JSON")'))

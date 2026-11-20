@@ -9,6 +9,7 @@ import type { ClipboardHistoryItem, ElectronAPI, HistoryState, QuickPickAction }
 import { convertColor } from '../shared/colors'
 import { filePathLabel } from '../shared/files'
 import { DEFAULT_SHORTCUTS } from '../shared/shortcuts'
+import { version as appVersion } from '../package.json'
 
 const wrappers: VueWrapper[] = []
 let emitState: (state: HistoryState) => void
@@ -622,12 +623,14 @@ describe('settings', () => {
     expect(wrapper.get('#settings-about-tab').attributes('aria-selected')).toBe('true')
     expect(document.activeElement?.id).toBe('settings-about-tab')
     const about = wrapper.get('#settings-about')
-    expect(about.text()).toContain('2.0.0')
+    expect(about.text()).toContain(appVersion)
     expect(about.text()).toContain('Vasilev Viacheslav')
     expect(wrapper.get('#settings-about-tab').text()).toBe('О программе')
     expect(about.get('.license-text').text()).toContain('Copyright (c) 2026 Vasilev Viacheslav')
     expect(about.get('.license-text').text()).not.toContain('草鞋没号')
-    expect(about.findAll('.license-disclosure')).toHaveLength(10)
+    const updaterLicense = about.findAll('.license-disclosure').find(disclosure =>
+      disclosure.get('summary').text().startsWith('electron-updater '))
+    expect(updaterLicense?.get('.license-text').text()).toContain('Permission is hereby granted')
     expect(about.find('.electron-notices').exists()).toBe(false)
     expect(about.text()).not.toContain('@babel/helper-string-parser')
     expect(about.get('.license-disclosure').attributes('open')).toBeUndefined()
