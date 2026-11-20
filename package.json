@@ -51,6 +51,11 @@
   },
   "overrides": {
     "tar": "^7.5.22",
-    "@electron/get": "^5.1.0"
+    "@electron/get": "^5.1.0",
+    "get-windows": {
+      "node-gyp": "^12.4.0"
+    },
+    "glob@>=9 <14.0.2": "^14.0.2",
+    "minimatch@>=7 <11.0.1": "^11.0.1"
   }
 }
