@@ -61,12 +61,13 @@ let shortcuts: ShortcutSettings = { ...DEFAULT_SHORTCUTS }
 let pasteOnSelect = true
 let promoteCopiedRecords = true
 let windowsPaste: ReturnType<typeof createWindowsPaste> | null = null
+// Once the ordinary window loses focus, use the latest native capture on return.
+let windowPasteTarget: PasteTarget | null | undefined
 type QuickPickSession = {
   window: BrowserWindow
   target: PasteTarget
   keys: ReturnType<typeof createWindowsQuickPickKeys>
   watch: ReturnType<typeof setInterval>
-  hiddenForPaste: boolean
   isCurrent(): boolean
 }
 let quickPick: QuickPickSession | null = null
@@ -218,7 +219,7 @@ function broadcast() {
 function updateTray() {
   tray?.setToolTip('ClipClip — ' + shortcutLabel(shortcuts.openWindow))
   tray?.setContextMenu(Menu.buildFromTemplate([
-    { label: 'Открыть ClipClip', click: showWindow },
+    { label: 'Открыть ClipClip', click: () => showWindow() },
     { label: history.paused ? 'Продолжить запись' : 'Приостановить запись', click: () => { void history.setPaused(!history.paused).catch(() => {}) } },
     { type: 'separator' },
     { label: 'Выход', click: () => app.quit() },
@@ -246,7 +247,10 @@ function reserveGlobalShortcut(accelerator: string): ShortcutReservation | null 
     if (process.platform === 'win32') {
       if (!win || win.isDestroyed()) return null
       // Change native window styles after WM_HOTKEY has returned to Windows.
-      windowShortcut ??= createWindowsShortcut(win, () => { setImmediate(showFromShortcut) })
+      windowShortcut ??= createWindowsShortcut(win, () => {
+        const target = windowsPaste?.foregroundTarget() ?? null
+        setImmediate(() => showFromShortcut(target))
+      })
       return windowShortcut.reserve(accelerator)
     }
     if (globalShortcut.isRegistered(accelerator)) return { commit() {}, cancel() {} }
@@ -339,7 +343,7 @@ function registerIpc() {
       else shell.showItemInFolder(path)
     })
   })
-  const copyItem = async (value: unknown, pasteMarker?: string, beforeWrite?: () => void) => {
+  const copyItem = async (value: unknown, pasteMarker?: string, isCurrent?: () => boolean) => {
     const id = requireId(value)
     const item = history.items.find(candidate => candidate.id === id)
     if (!item) throw new Error('Запись уже удалена.')
@@ -348,7 +352,7 @@ function registerIpc() {
       fileUris: item.fileUris, image: item.type === 'image' ? { data: item.data, width: 1, height: 1 } : null,
     }
     const write = async () => {
-      beforeWrite?.()
+      if (isCurrent && !isCurrent()) throw new PasteError('Исходное окно потеряло фокус. Вызовите ClipClip из нужного поля.')
       if (testMode) {
         if (pasteMarker) {
           fixturePasteClipboard = { sequence: fixturePasteClipboard.sequence + 1, marker: pasteMarker }
@@ -397,29 +401,27 @@ function registerIpc() {
       throw new Error('Окно ClipClip неактивно.')
     }
     const generation = visibilityGeneration
-    const sameWindow = () => generation === visibilityGeneration && !quitting
-      && win === window && !window.isDestroyed() && !window.isMinimized()
-    const current = () => sameWindow() && (window.isVisible() || quick?.hiddenForPaste === true)
+    const current = () => generation === visibilityGeneration && !quitting
+      && win === window && !window.isDestroyed() && window.isVisible() && !window.isMinimized()
       && (!quick || quick.isCurrent())
     const testTargetPid = testMode ? Number(process.env.CLIPCLIP_TEST_PASTE_TARGET_PID) : 0
     const controller = windowsPaste
-    const shouldPaste = pasteOnSelect && controller !== null && (!testMode || testTargetPid > 0)
-    if (quick && !shouldPaste) throw new PasteError('Автоматическая вставка недоступна.')
-    const target = shouldPaste ? quick?.target ?? controller?.target() : null
+    const shouldPaste = process.platform === 'win32' && pasteOnSelect && (!testMode || testTargetPid > 0)
+    let target: PasteTarget | null = null
+    if (shouldPaste && controller) {
+      target = quick?.target ?? (windowPasteTarget === undefined ? controller.target() : windowPasteTarget)
+    }
     const pasteMarker = target && (!testMode || target.pid === testTargetPid) ? randomUUID() : undefined
     activating = true
     try {
-      const result = await copyItem(value, pasteMarker, quick ? () => {
-        if (!current()) throw new PasteError('Прежнее окно потеряло фокус.')
-        quick.hiddenForPaste = true
-        window.hide()
-      } : undefined)
+      const result = await copyItem(value, pasteMarker, quick ? current : undefined)
       if (result && result.status !== 'available') return result
       const copiedOnly = (reason: string): ItemActivationResult => ({
         status: 'paste-unavailable', canPasteManually: true, message: reason + ' Запись скопирована, её можно вставить вручную через Ctrl+V.',
       })
       if (shouldPaste) {
-        if (!controller || !target || !pasteMarker) {
+        if (!controller) return copiedOnly('Автоматическая вставка недоступна.')
+        if (!target || !pasteMarker) {
           return copiedOnly('Не найдено прежнее окно для вставки.')
         }
         const sequence = controller.clipboardSequence()
@@ -444,17 +446,11 @@ function registerIpc() {
           return copiedOnly(error instanceof PasteError ? error.message : 'Не удалось выполнить автоматическую вставку.')
         }
       } else if (!current() || !window.isFocused()) return copiedOnly('Выбранное окно потеряло фокус.')
-      if (quick) {
-        if (quickPick === quick) closeQuickPick({ hide: false })
-      } else if (current()) await hideWindow()
-    } finally {
-      activating = false
-      if (quick?.hiddenForPaste && quickPick === quick && sameWindow()) {
-        quick.hiddenForPaste = false
-        window.showInactive()
-        window.moveTop()
-      }
-    }
+      if (current()) await hideWindow()
+    } catch (error) {
+      if (error instanceof PasteError) return { status: 'paste-unavailable', message: error.message }
+      throw error
+    } finally { activating = false }
   })
   handle(CHANNELS.copyFilePath, async value => {
     if (!value || typeof value !== 'object') throw new Error('Некорректный путь записи.')
@@ -576,7 +572,7 @@ function registerIpc() {
   handle(CHANNELS.openFullWindow, () => {
     const pick = quickPick
     if (!pick || pick.window.isDestroyed() || !pick.window.isVisible()) throw new Error('Быстрый режим уже закрыт.')
-    windowsPaste?.capture()
+    windowPasteTarget = pick.target
     closeQuickPick({ hide: false })
     pick.window.setSkipTaskbar(false)
     pick.window.focus()
@@ -720,34 +716,42 @@ function closeQuickPick({ hide = true, keepOnTop = false } = {}) {
   if (!window.webContents.isDestroyed()) window.webContents.send(CHANNELS.quickPickChanged, false)
 }
 
-function showFromShortcut() {
+function showFromShortcut(target = windowsPaste?.foregroundTarget() ?? null) {
   if (!initialized || quitting || activating) return
   const window = win
   const controller = windowsPaste
-  const target = pasteOnSelect ? controller?.foregroundTarget() : null
-  if (window && !window.isDestroyed() && window.isVisible() && !window.isMinimized()
-    && (quickPick?.isCurrent() || (!target && window.isAlwaysOnTop()))) {
-    window.moveTop()
-    return
-  }
-  if (!window || window.isDestroyed() || readyWindow !== window || !controller || !target
+  if (!target && !quickPick && window && !window.isDestroyed() && window.isVisible() && window.isFocused()) return
+  if (!window || window.isDestroyed() || readyWindow !== window || !pasteOnSelect || !controller || !target
+    || !controller.isForegroundTarget(target)
     || window.isFullScreen() || window.isMinimized()
     || (testMode && target.pid !== Number(process.env.CLIPCLIP_TEST_PASTE_TARGET_PID))) {
-    if (!quickPick) showWindow()
+    showWindow(target)
     return
   }
-  // An explicit invocation can bind an open picker to a new destination.
-  if (quickPick) closeQuickPick({ hide: false, keepOnTop: true })
+  // Refresh the hook without changing the native styles of an already open picker.
+  const previous = quickPick
+  if (previous) {
+    clearInterval(previous.watch)
+    previous.keys.dispose()
+  }
   const pickerHandle = readWindowHandle(window.getNativeWindowHandle())
   const isCurrent = () => !quitting && quickPick?.isCurrent === isCurrent && controller.isForegroundTarget(target)
   let keys: ReturnType<typeof createWindowsQuickPickKeys>
   try {
-    keys = createWindowsQuickPickKeys(() => !quickPick?.hiddenForPaste && isCurrent(), action => {
+    // On Windows, setFocusable(false) on a visible window can activate its neighbor.
+    if (!previous && window.isVisible()) {
+      window.hide()
+      if (!controller.isForegroundTarget(target)) {
+        showWindow(target)
+        return
+      }
+    }
+    keys = createWindowsQuickPickKeys(() => isCurrent() && window.isVisible(), action => {
       if (action === 'dismiss') closeQuickPick()
       else if (!activating && !window.webContents.isDestroyed()) window.webContents.send(CHANNELS.quickPickAction, action)
     }, testMode ? 0x434c4950 : undefined)
   } catch {
-    showWindow()
+    showWindow(target)
     return
   }
   visibilityGeneration++
@@ -763,23 +767,28 @@ function showFromShortcut() {
     pickerFocusedSince ??= now
     if (now - pickerFocusedSince < QUICK_PICK_FOCUS_SETTLE_MS) return
     // Keep the picker above the invoking app even if Windows activated it.
-    controller.capture(target.hwnd)
+    windowPasteTarget = target
     closeQuickPick({ hide: false, keepOnTop: true })
     window.setSkipTaskbar(false)
-    window.moveTop()
     window.webContents.send(CHANNELS.windowShown)
   }, 35)
   watch.unref()
-  quickPick = { window, target, keys, watch, isCurrent, hiddenForPaste: false }
+  quickPick = { window, target, keys, watch, isCurrent }
   try {
+    if (previous?.window === window && window.isVisible()) {
+      if (previous.target.hwnd !== target.hwnd || previous.target.pid !== target.pid) {
+        window.webContents.send(CHANNELS.windowShown)
+      }
+      window.moveTop()
+      return
+    }
     window.setFocusable(false)
     window.setAlwaysOnTop(true)
     window.webContents.send(CHANNELS.quickPickChanged, true)
     window.webContents.send(CHANNELS.windowShown)
     window.showInactive()
-    window.moveTop()
   } catch {
-    showWindow()
+    showWindow(target)
   }
 }
 
@@ -789,8 +798,9 @@ function toggleTrayWindow() {
     else showWindow()
   }).catch(() => { if (!quitting) showWindow() })
 }
-function showWindow() {
+function showWindow(target = windowsPaste?.foregroundTarget() ?? windowsPaste?.target() ?? null) {
   if (!initialized || quitting) return
+  windowPasteTarget = target
   closeQuickPick({ hide: false })
   if (!win || win.isDestroyed()) {
     createWindow()
@@ -800,7 +810,6 @@ function showWindow() {
     showWindowOnReady = true
     return
   }
-  windowsPaste?.capture()
   visibilityGeneration++
   if (win.isAlwaysOnTop()) win.setAlwaysOnTop(false)
   if (process.platform === 'win32') win.setSkipTaskbar(false)
@@ -821,7 +830,7 @@ function createWindow(showOnReady = true) {
   const created = win
   if (windowsPaste) {
     try { windowsPaste.trackWindow(created) }
-    catch { windowsPaste.dispose(); windowsPaste = null }
+    catch { console.warn('ClipClip could not track Windows activation messages.') }
   }
   if (process.platform === 'win32' && !testMode) {
     try {
@@ -839,12 +848,15 @@ function createWindow(showOnReady = true) {
   }
   created.on('show', syncTaskbar)
   created.on('hide', syncTaskbar)
-  created.on('blur', finishShortcutCapture)
+  created.on('blur', () => {
+    if (win === created && !quickPick) windowPasteTarget = undefined
+    finishShortcutCapture()
+  })
   created.on('hide', finishShortcutCapture)
   const releaseHiddenPicker = () => {
     if (created.isDestroyed()) return
     if (quickPick?.window === created) {
-      if (!quickPick.hiddenForPaste) closeQuickPick({ hide: false })
+      closeQuickPick({ hide: false })
     } else if (created.isAlwaysOnTop()) created.setAlwaysOnTop(false)
   }
   created.on('hide', releaseHiddenPicker)
@@ -864,15 +876,21 @@ function createWindow(showOnReady = true) {
     if (!event.isMainFrame || !isTrustedPage(event.url, entry)) event.preventDefault()
   })
   created.webContents.on('will-attach-webview', event => event.preventDefault())
-  created.webContents.on('did-finish-load', broadcast)
+  created.webContents.on('did-finish-load', () => {
+    broadcast()
+    // A renderer reload should restore the visible picker's existing session.
+    if (quickPick?.window === created && created.isVisible()) {
+      created.webContents.send(CHANNELS.quickPickChanged, true)
+      created.webContents.send(CHANNELS.windowShown)
+    }
+  })
   created.webContents.on('render-process-gone', finishShortcutCapture)
   created.webContents.on('did-start-loading', finishShortcutCapture)
   created.webContents.on('render-process-gone', () => { if (quickPick?.window === created) closeQuickPick() })
-  created.webContents.on('did-start-loading', () => { if (quickPick?.window === created) closeQuickPick() })
   created.once('ready-to-show', () => {
     if (win !== created || created.isDestroyed()) return
     readyWindow = created
-    if (showWindowOnReady) showWindow()
+    if (showWindowOnReady) showWindow(windowPasteTarget)
   })
   created.on('close', event => {
     if (!quitting && process.platform !== 'darwin' && tray) {
@@ -965,7 +983,7 @@ void app.whenReady().then(initialize).catch(() => { console.error('ClipClip coul
 app.on('second-instance', (_event, argv) => {
   if (process.platform !== 'win32' || !argv?.includes('--hidden')) showWindow()
 })
-app.on('activate', showWindow)
+app.on('activate', () => showWindow())
 if (testMode && process.env.CLIPCLIP_TEST_PASTE === '1') {
   (app as NodeJS.EventEmitter).on('clipclip:test:open-quick-pick', showFromShortcut)
 }

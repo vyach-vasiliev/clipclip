@@ -187,8 +187,11 @@ onBeforeUnmount(() => {
           <input id="paste-on-select" type="checkbox" class="mt-1 accent-accent" :checked="buffer.pasteOnSelectActive"
             :disabled="!buffer.pasteAvailable || buffer.busy || buffer.loading" @change="changePasteOnSelect" />
           <span>Вставлять выбранную запись в активное окно
-            <span v-if="buffer.pasteAvailable" class="mt-1 block text-xs text-muted">При выборе записи кликом или Enter ClipClip скроется и вставит её в предыдущее окно.</span>
-            <span v-else class="mt-1 block text-xs text-muted">Автоматическая вставка недоступна. При выборе ClipClip скопирует запись в буфер и скроет окно.</span>
+            <span class="mt-1 block text-xs text-muted">
+              <template v-if="!buffer.pasteAvailable">Автоматическая вставка недоступна. При выборе запись будет скопирована в буфер.</template>
+              <template v-else-if="buffer.pasteOnSelectActive">При выборе записи кликом или Enter ClipClip вставит её в предыдущее окно.</template>
+              <template v-else>При выборе ClipClip скопирует запись в буфер и скроет окно.</template>
+            </span>
           </span>
         </label>
         <label class="flex min-h-10 items-start gap-2 border-b border-line pb-3 text-[13px] leading-relaxed">

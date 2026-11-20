@@ -125,7 +125,10 @@ function recordLabel(item: ClipboardHistoryItem) {
   return item.type !== 'image' ? KIND_LABELS[item.type] + ': ' + (item.data.trim() ? shortText(item).slice(0, 160).replace(/\s+/g, ' ') : 'Пробелы и переносы строк')
     : 'Изображение, ' + item.params.size
 }
-const recordActionLabel = computed(() => quickPick.value || buffer.pasteOnSelectActive ? 'Вставить в активное окно' : 'Скопировать и скрыть')
+const recordActionLabel = computed(() => {
+  if (quickPick.value || buffer.pasteOnSelectActive) return 'Вставить в активное окно'
+  return buffer.pasteOnSelect ? 'Скопировать' : 'Скопировать и скрыть'
+})
 
 watch(filteredIds, ids => {
   if (selectedId.value && ids.includes(selectedId.value)) return

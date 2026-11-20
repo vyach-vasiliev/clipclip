@@ -374,7 +374,7 @@ describe('settings', () => {
     const { wrapper, api, buffer } = await setup()
     emitState({ ...state(undefined, 2), pasteAvailable: false })
     await flushPromises()
-    expect(wrapper.get('.record-select').attributes('aria-label')).toMatch(/^Скопировать и скрыть\./)
+    expect(wrapper.get('.record-select').attributes('aria-label')).toMatch(/^Скопировать\./)
     expect(wrapper.get('footer[aria-label="Горячие клавиши"]').text()).toContain('копировать')
     await wrapper.get('.settings-button').trigger('click')
     await vi.dynamicImportSettled()

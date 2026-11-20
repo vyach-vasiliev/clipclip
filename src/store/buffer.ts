@@ -1,11 +1,13 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import type { ClipboardHistoryItem, FileCheckResult, HistoryState } from '../../shared/clipboard'
+import type { ClipboardHistoryItem, FileCheckResult, HistoryState, ItemActivationResult } from '../../shared/clipboard'
 import { HISTORY_LIMIT } from '../../shared/clipboard'
 import type { ColorFormat } from '../../shared/colors'
 import { DEFAULT_SHORTCUTS, type ShortcutSettings } from '../../shared/shortcuts'
 import type { BackupResult } from '../../shared/backup'
 import { DEFAULT_TIME_FORMAT, type TimeFormat } from '../../shared/time'
+
+type PasteFailure = Extract<ItemActivationResult, { status: 'paste-unavailable' }>
 
 export const useBufferStore = defineStore('buffer', () => {
   const clipboardHistory = ref<ClipboardHistoryItem[]>([])
@@ -21,8 +23,16 @@ export const useBufferStore = defineStore('buffer', () => {
   const persistent = ref(false)
   const shortcutAvailable = ref(true)
   const canUndo = ref(false)
-  const error = ref<string | null>(null)
-  const pasteWarning = ref(false)
+  const latestError = ref<string | null>(null)
+  const pasteFailure = ref<PasteFailure | null>(null)
+  const error = computed({
+    get: () => pasteFailure.value?.message ?? latestError.value,
+    set: (value: string | null) => {
+      pasteFailure.value = null
+      latestError.value = value
+    },
+  })
+  const pasteWarning = computed(() => pasteFailure.value?.canPasteManually === true)
   const busy = ref(false)
   let revision = -1
   let unsubscribe: (() => void) | undefined
@@ -43,8 +53,7 @@ export const useBufferStore = defineStore('buffer', () => {
     persistent.value = state.persistent
     shortcutAvailable.value = state.shortcutAvailable
     canUndo.value = state.canUndo
-    error.value = state.error
-    pasteWarning.value = false
+    latestError.value = state.error
     loading.value = false
   }
 
@@ -76,16 +85,15 @@ export const useBufferStore = defineStore('buffer', () => {
     revision = -1
   }
 
-  async function action(operation: () => Promise<void | string | { pasteWarning: string }>, failure: string): Promise<boolean> {
+  async function action(operation: () => Promise<void | string | PasteFailure>, failure: string): Promise<boolean> {
     if (busy.value) return false
     busy.value = true
     error.value = null
-    pasteWarning.value = false
     try {
       const message = await operation()
       if (message) {
-        pasteWarning.value = typeof message !== 'string'
-        error.value = typeof message === 'string' ? message : message.pasteWarning
+        if (typeof message === 'string') error.value = message
+        else pasteFailure.value = message
         return false
       }
       return true
@@ -97,7 +105,7 @@ export const useBufferStore = defineStore('buffer', () => {
   const copy = (id: string, onFileCheck?: (id: string, result: FileCheckResult) => void, activate = false) => action(
     async () => {
       const result = await (activate ? window.electronAPI!.activateItem(id) : window.electronAPI!.copyItem(id))
-      if (result && result.status === 'paste-unavailable') return result.canPasteManually ? { pasteWarning: result.message } : result.message
+      if (result && result.status === 'paste-unavailable') return result
       if (clipboardHistory.value.some(item => item.id === id && item.fileUris)) {
         onFileCheck?.(id, result ?? { status: 'available', message: 'Все файлы и папки доступны.' })
       }
