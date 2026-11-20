@@ -29,7 +29,7 @@
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^24.0.0",
     "@vitejs/plugin-vue": "^6.0.10",
-    "@vue/test-utils": "^2.4.6",
+    "@vue/test-utils": "^2.6.0",
     "electron": "^44.9.1",
     "electron-builder": "^26.15.3",
     "jsdom": "^27.0.0",
